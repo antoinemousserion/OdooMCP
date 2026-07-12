@@ -1,9 +1,9 @@
 # =============================================================================
 # Odoo MCP — Docker Compose
 # =============================================================================
-# Démarrer une version :  docker compose --profile v18 up -d --build
-# Arrêter une version  :  docker compose --profile v18 down
-# Logs                 :  docker compose logs -f odoo-mcp-v18
+# Démarrer une version :  docker compose --profile v19 up -d --build
+# Arrêter une version  :  docker compose --profile v19 down
+# Logs                 :  docker compose logs -f odoo-mcp-v19
 #
 # Volume local : ${ODOO_VOLUME_PATH} (défini dans .env)
 # Structure    : v18/community, v18/enterprise, v17/community, etc.

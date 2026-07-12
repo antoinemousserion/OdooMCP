@@ -20,37 +20,72 @@ if [[ "${FORCE_RECLONE:-false}" == "true" ]]; then
     rm -rf "${COMMUNITY_DIR}" "${ENTERPRISE_DIR}"
 fi
 
+clear_git_locks() {
+    local dir="$1"
+    if [[ ! -d "${dir}/.git" ]]; then
+        return 0
+    fi
+    local lock
+    for lock in index.lock shallow.lock HEAD.lock packed-refs.lock; do
+        if [[ -f "${dir}/.git/${lock}" ]]; then
+            log "Suppression lock Git stale : ${dir}/.git/${lock}"
+            rm -f "${dir}/.git/${lock}"
+        fi
+    done
+}
+
 clone_or_update() {
     local dir="$1"
     local url="$2"
     local label="$3"
 
+    clear_git_locks "${dir}"
+
     if [[ -d "${dir}/.git" ]]; then
         log "Mise à jour ${label} (${BRANCH})..."
-        git -C "${dir}" fetch --depth="${GIT_DEPTH}" origin "${BRANCH}" 2>/dev/null || \
-            git -C "${dir}" fetch origin "${BRANCH}"
-        git -C "${dir}" checkout "${BRANCH}" 2>/dev/null || git -C "${dir}" checkout -B "${BRANCH}" "origin/${BRANCH}"
-        git -C "${dir}" reset --hard "origin/${BRANCH}"
-    else
-        log "Clone initial ${label} (${BRANCH})..."
-        mkdir -p "$(dirname "${dir}")"
-        if [[ "${GIT_DEPTH}" != "0" && -n "${GIT_DEPTH}" ]]; then
-            git clone --branch "${BRANCH}" --single-branch --depth "${GIT_DEPTH}" "${url}" "${dir}"
-        else
-            git clone --branch "${BRANCH}" --single-branch "${url}" "${dir}"
+        if ! git -C "${dir}" fetch --depth="${GIT_DEPTH}" origin "${BRANCH}" 2>/dev/null; then
+            if ! git -C "${dir}" fetch origin "${BRANCH}"; then
+                log "ATTENTION: git fetch ${label} echoue — code local conserve (verifiez index.lock si boucle de restart)"
+                return 0
+            fi
         fi
+        git -C "${dir}" checkout "${BRANCH}" 2>/dev/null || git -C "${dir}" checkout -B "${BRANCH}" "origin/${BRANCH}" || {
+            log "ATTENTION: git checkout ${label} echoue — code local conserve"
+            return 0
+        }
+        git -C "${dir}" reset --hard "origin/${BRANCH}" || {
+            log "ATTENTION: git reset ${label} echoue — code local conserve"
+            return 0
+        }
+        return 0
+    fi
+
+    log "Clone initial ${label} (${BRANCH})..."
+    mkdir -p "$(dirname "${dir}")"
+    if [[ -d "${dir}" ]]; then
+        rm -rf "${dir}"
+    fi
+    if [[ "${GIT_DEPTH}" != "0" && -n "${GIT_DEPTH}" ]]; then
+        git clone --branch "${BRANCH}" --single-branch --depth "${GIT_DEPTH}" "${url}" "${dir}" || return 1
+    else
+        git clone --branch "${BRANCH}" --single-branch "${url}" "${dir}" || return 1
     fi
 }
 
 mkdir -p "${DATA_ROOT}"
 
 # --- Community (public) ---
-clone_or_update "${COMMUNITY_DIR}" "${COMMUNITY_URL}" "community"
+if ! clone_or_update "${COMMUNITY_DIR}" "${COMMUNITY_URL}" "community"; then
+    log "ERREUR: clone community impossible. Verifiez le volume et supprimez .git/index.lock si present."
+    if [[ ! -d "${COMMUNITY_DIR}/.git" ]]; then
+        exit 1
+    fi
+    log "Community partiellement present — demarrage MCP avec le code disponible."
+fi
 
 # --- Enterprise (privé, optionnel) ---
 if [[ "${CLONE_ENTERPRISE}" == "true" ]]; then
     if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-        # x-access-token : compatible PAT classique et fine-grained
         AUTH_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/odoo/enterprise.git"
         if ! clone_or_update "${ENTERPRISE_DIR}" "${AUTH_URL}" "enterprise"; then
             log "ATTENTION: clone enterprise echoue."

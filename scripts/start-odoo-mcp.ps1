@@ -143,8 +143,8 @@ function Ask-ForceReclone {
     if (-not $hasExisting) { return $false }
 
     Write-Host ""
-    $answer = Read-Host "Forcer un nouveau clonage Git si le code existe deja ? [Y/n]"
-    return ($answer -eq "" -or $answer -match "^[Yy]")
+    $answer = Read-Host "Forcer un nouveau clonage Git si le code existe deja ? [y/N]"
+    return ($answer -match "^[Yy]")
 }
 
 function Start-SelectedVersions {

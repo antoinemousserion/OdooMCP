@@ -1,0 +1,245 @@
+"""Wrapper ripgrep avec contexte, chemins normalisés et mode fixed-string."""
+
+from __future__ import annotations
+
+import json
+import re
+import shutil
+import subprocess
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from odoo_mcp.config import OdooPaths
+from odoo_mcp.tools.paths_util import enterprise_warning, normalize_result_path
+
+RG_TIMEOUT = 60
+
+
+@dataclass
+class RgMatch:
+    file: str
+    line: int
+    content: str
+    relative_path: str
+    edition: str
+    workspace_hint: str
+    context_before: list[str] = field(default_factory=list)
+    context_after: list[str] = field(default_factory=list)
+
+
+def escape_regex_literal(text: str) -> str:
+    return re.escape(text)
+
+
+def run_rg(
+    paths: OdooPaths,
+    pattern: str,
+    search_paths: list[Path],
+    *,
+    scope: str = "all",
+    glob: str | None = None,
+    file_type: str | None = "py",
+    context: int = 0,
+    max_results: int = 100,
+    case_insensitive: bool = False,
+    fixed_string: bool = False,
+) -> tuple[list[RgMatch], str | None]:
+    warning = enterprise_warning(paths, scope)
+
+    if not search_paths:
+        return [], warning
+
+    if not shutil.which("rg"):
+        return _python_scan(
+            paths, pattern, search_paths, glob=glob, max_results=max_results, fixed_string=fixed_string
+        ), warning
+
+    cmd = [
+        "rg",
+        "--json",
+        "--max-count",
+        str(max_results),
+        "--max-columns",
+        "500",
+    ]
+    if case_insensitive:
+        cmd.append("-i")
+    if context:
+        cmd.extend(["-C", str(context)])
+    if glob:
+        cmd.extend(["--glob", glob])
+    if file_type:
+        cmd.extend(["--type", file_type])
+    if fixed_string:
+        cmd.append("-F")
+    cmd.extend(["--", pattern])
+    cmd.extend(str(p) for p in search_paths if p.is_dir())
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=RG_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return [], warning
+
+    if result.returncode not in (0, 1):
+        return [], warning
+
+    matches = _parse_rg_json(result.stdout, paths, max_results)
+    return matches, warning
+
+
+def _parse_rg_json(stdout: str, paths: OdooPaths, max_results: int) -> list[RgMatch]:
+    pending_before: list[str] = []
+    results: list[RgMatch] = []
+    current: RgMatch | None = None
+
+    for raw_line in stdout.splitlines():
+        if not raw_line.strip():
+            continue
+        try:
+            entry = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
+
+        entry_type = entry.get("type")
+        data = entry.get("data", {})
+        line_text = data.get("lines", {}).get("text", "").rstrip("\n")
+
+        if entry_type == "context":
+            if current is not None:
+                current.context_after.append(line_text)
+            else:
+                pending_before.append(line_text)
+            continue
+
+        if entry_type != "match":
+            pending_before = []
+            continue
+
+        path_info = normalize_result_path(data["path"]["text"], paths)
+        current = RgMatch(
+            file=path_info["file"],
+            line=data["line_number"],
+            content=line_text,
+            relative_path=path_info["relative_path"],
+            edition=path_info["edition"],
+            workspace_hint=path_info["workspace_hint"],
+            context_before=pending_before.copy(),
+            context_after=[],
+        )
+        pending_before = []
+        results.append(current)
+        current = None
+
+        if len(results) >= max_results:
+            break
+
+    return results
+
+
+def _python_scan(
+    paths: OdooPaths,
+    pattern: str,
+    search_paths: list[Path],
+    *,
+    glob: str | None,
+    max_results: int,
+    fixed_string: bool,
+) -> list[RgMatch]:
+    try:
+        regex = re.compile(re.escape(pattern) if fixed_string else pattern)
+    except re.error:
+        return []
+
+    suffix = None
+    if glob and glob.startswith("*."):
+        suffix = glob[1:]
+
+    results: list[RgMatch] = []
+    for root in search_paths:
+        if not root.is_dir():
+            continue
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            if suffix and not str(path).endswith(suffix):
+                continue
+            try:
+                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                continue
+            for idx, line in enumerate(lines, 1):
+                if fixed_string:
+                    found = pattern in line
+                else:
+                    found = bool(regex.search(line))
+                if not found:
+                    continue
+                info = normalize_result_path(path, paths)
+                results.append(
+                    RgMatch(
+                        file=info["file"],
+                        line=idx,
+                        content=line.rstrip(),
+                        relative_path=info["relative_path"],
+                        edition=info["edition"],
+                        workspace_hint=info["workspace_hint"],
+                    )
+                )
+                if len(results) >= max_results:
+                    return results
+    return results
+
+
+def format_matches(
+    matches: list[RgMatch],
+    *,
+    pattern: str,
+    max_results: int,
+    warning: str | None = None,
+    as_json: bool = False,
+) -> str:
+    if not matches:
+        msg = f"No results for {pattern!r}."
+        if warning:
+            msg = f"{warning}\n\n{msg}"
+        return msg
+
+    if as_json:
+        import json as json_mod
+
+        payload: dict = {
+            "count": len(matches),
+            "results": [
+                {
+                    "file": m.file,
+                    "relative_path": m.relative_path,
+                    "workspace_hint": m.workspace_hint,
+                    "edition": m.edition,
+                    "line": m.line,
+                    "content": m.content,
+                    "context_before": m.context_before,
+                    "context_after": m.context_after,
+                }
+                for m in matches
+            ],
+        }
+        if warning:
+            payload["warning"] = warning
+        text = json_mod.dumps(payload, indent=2, ensure_ascii=False)
+    else:
+        lines: list[str] = []
+        for m in matches:
+            if m.context_before:
+                for ctx in m.context_before:
+                    lines.append(f"{m.relative_path}:{m.line - len(m.context_before)}- {ctx}")
+            lines.append(f"{m.relative_path}:{m.line}: {m.content}")
+            for i, ctx in enumerate(m.context_after, 1):
+                lines.append(f"{m.relative_path}:{m.line + i}- {ctx}")
+        header = f"{len(matches)} result(s) (max {max_results})\n\n"
+        text = header + "\n".join(lines)
+        if warning:
+            text = f"{warning}\n\n{text}"
+
+    from odoo_mcp.tools.search import _truncate
+
+    return _truncate(text)

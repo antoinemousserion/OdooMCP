@@ -3,186 +3,120 @@
 from __future__ import annotations
 
 import json
-import shutil
-import subprocess
 from pathlib import Path
 
 from odoo_mcp.config import OdooPaths
 from odoo_mcp.security import PathSecurityError, resolve_safe_path, resolve_search_path
+from odoo_mcp.tools import rg as rg_tools
+from odoo_mcp.tools.paths_util import normalize_result_path
 
 MAX_OUTPUT_CHARS = 80_000
 DEFAULT_MAX_RESULTS = 100
-RG_TIMEOUT = 60
 
 
 def _truncate(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
     if len(text) <= limit:
         return text
-    return text[:limit] + f"\n\n... [tronqué — {len(text) - limit} caractères omis]"
+    return text[:limit] + f"\n\n... [truncated — {len(text) - limit} chars omitted]"
 
 
-def _run_rg(
-    pattern: str,
-    search_paths: list[Path],
-    *,
-    glob: str | None = None,
-    file_type: str | None = None,
-    context: int = 0,
-    max_results: int = DEFAULT_MAX_RESULTS,
-    case_insensitive: bool = False,
-) -> str:
-    if not shutil.which("rg"):
-        return _grep_fallback(pattern, search_paths, glob=glob, max_results=max_results)
-
-    cmd = [
-        "rg",
-        "--json",
-        "--max-count",
-        str(max_results),
-        "--max-columns",
-        "500",
-    ]
-    if case_insensitive:
-        cmd.append("-i")
-    if context:
-        cmd.extend(["-C", str(context)])
-    if glob:
-        cmd.extend(["--glob", glob])
-    if file_type:
-        cmd.extend(["--type", file_type])
-    cmd.extend(["--", pattern])
-    cmd.extend(str(p) for p in search_paths if p.is_dir())
-
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=RG_TIMEOUT,
-        )
-    except subprocess.TimeoutExpired:
-        return "Erreur : recherche expirée (timeout 60s). Affinez le pattern ou réduisez le scope."
-
-    lines = result.stdout.strip().splitlines()
-    matches: list[dict] = []
-    for line in lines:
-        if not line.strip():
-            continue
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if entry.get("type") != "match":
-            continue
-        data = entry["data"]
-        path_text = data["path"]["text"]
-        line_num = data["line_number"]
-        line_text = data["lines"]["text"].rstrip("\n")
-        matches.append({"file": path_text, "line": line_num, "content": line_text})
-        if len(matches) >= max_results:
-            break
-
-    if not matches:
-        hint = ""
-        if result.returncode not in (0, 1):
-            hint = f"\nstderr: {result.stderr.strip()}"
-        return f"Aucun résultat pour {pattern!r}.{hint}"
-
-    output_lines = [f"{m['file']}:{m['line']}: {m['content']}" for m in matches]
-    header = f"{len(matches)} résultat(s) (max {max_results})\n\n"
-    return _truncate(header + "\n".join(output_lines))
-
-
-def _grep_fallback(
-    pattern: str,
-    search_paths: list[Path],
-    *,
-    glob: str | None = None,
-    max_results: int = DEFAULT_MAX_RESULTS,
-) -> str:
-    """Fallback Python si ripgrep absent (dev local sans Docker)."""
-    import re
-
-    try:
-        regex = re.compile(pattern)
-    except re.error as exc:
-        return f"Pattern regex invalide : {exc}"
-
-    matches: list[str] = []
-    suffix = glob.replace("*", "") if glob and glob.startswith("*.") else None
-
-    for root in search_paths:
-        if not root.is_dir():
-            continue
-        for path in root.rglob("*"):
-            if not path.is_file():
-                continue
-            if suffix and path.suffix != suffix:
-                continue
-            try:
-                text = path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            for i, line in enumerate(text.splitlines(), 1):
-                if regex.search(line):
-                    matches.append(f"{path}:{i}: {line.rstrip()}")
-                    if len(matches) >= max_results:
-                        return _truncate(f"{len(matches)} résultat(s)\n\n" + "\n".join(matches))
-
-    if not matches:
-        return f"Aucun résultat pour {pattern!r} (fallback Python, ripgrep absent)."
-    return _truncate(f"{len(matches)} résultat(s)\n\n" + "\n".join(matches))
+def _coalesce(*values: str | None) -> str | None:
+    for value in values:
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return None
 
 
 def search_code(
     paths: OdooPaths,
-    pattern: str,
+    pattern: str | None = None,
     *,
+    query: str | None = None,
     scope: str = "all",
     glob: str | None = None,
+    glob_pattern: str | None = None,
     file_type: str | None = "py",
     context: int = 0,
     max_results: int = DEFAULT_MAX_RESULTS,
     case_insensitive: bool = False,
+    fixed_string: bool = False,
 ) -> str:
-    search_paths = resolve_search_path(paths, scope)
-    if not search_paths:
-        return f"Aucun répertoire disponible pour le scope {scope!r}."
-    return _run_rg(
-        pattern,
+    effective_pattern = _coalesce(pattern, query)
+    if not effective_pattern:
+        return "Error: provide 'pattern' or 'query'."
+
+    effective_glob = _coalesce(glob_pattern, glob)
+    try:
+        search_paths = resolve_search_path(paths, scope)
+    except PathSecurityError as exc:
+        return f"Error: {exc}"
+
+    matches, warning = rg_tools.run_rg(
+        paths,
+        effective_pattern,
         search_paths,
-        glob=glob,
+        scope=scope,
+        glob=effective_glob,
         file_type=file_type,
         context=context,
         max_results=max_results,
         case_insensitive=case_insensitive,
+        fixed_string=fixed_string,
+    )
+    return rg_tools.format_matches(
+        matches,
+        pattern=effective_pattern,
+        max_results=max_results,
+        warning=warning,
     )
 
 
 def glob_files(
     paths: OdooPaths,
-    pattern: str,
+    pattern: str | None = None,
     *,
+    glob_pattern: str | None = None,
     scope: str = "all",
     max_results: int = DEFAULT_MAX_RESULTS,
 ) -> str:
-    search_paths = resolve_search_path(paths, scope)
-    if not search_paths:
-        return f"Aucun répertoire disponible pour le scope {scope!r}."
+    effective_pattern = _coalesce(pattern, glob_pattern)
+    if not effective_pattern:
+        return "Error: provide 'pattern' or 'glob_pattern'."
 
-    found: list[str] = []
+    try:
+        search_paths = resolve_search_path(paths, scope)
+    except PathSecurityError as exc:
+        return f"Error: {exc}"
+
+    if not search_paths:
+        return f"No directory available for scope {scope!r}."
+
+    from odoo_mcp.tools.paths_util import enterprise_warning
+
+    warning = enterprise_warning(paths, scope)
+    found: list[dict[str, str]] = []
+
+    glob_expr = effective_pattern if effective_pattern.startswith("**/") else f"**/{effective_pattern}"
     for root in search_paths:
-        for match in root.glob(f"**/{pattern}" if not pattern.startswith("**/") else pattern):
+        for match in root.glob(glob_expr):
             if match.is_file():
-                found.append(str(match))
+                info = normalize_result_path(match, paths)
+                found.append(info)
                 if len(found) >= max_results:
                     break
         if len(found) >= max_results:
             break
 
     if not found:
-        return f"Aucun fichier pour le pattern {pattern!r}."
-    return _truncate(f"{len(found)} fichier(s)\n\n" + "\n".join(sorted(found)))
+        msg = f"No files for pattern {effective_pattern!r}."
+        return f"{warning}\n\n{msg}" if warning else msg
+
+    lines = [
+        f"{item['relative_path']}  (workspace: {item['workspace_hint']})"
+        for item in sorted(found, key=lambda x: x["relative_path"])
+    ]
+    text = _truncate(f"{len(lines)} file(s)\n\n" + "\n".join(lines))
+    return f"{warning}\n\n{text}" if warning else text
 
 
 def read_file(
@@ -194,8 +128,9 @@ def read_file(
 ) -> str:
     file_path = resolve_safe_path(paths, path)
     if not file_path.is_file():
-        raise PathSecurityError(f"N'est pas un fichier : {path}")
+        raise PathSecurityError(f"Not a file: {path}")
 
+    info = normalize_result_path(file_path, paths)
     lines = file_path.read_text(encoding="utf-8", errors="replace").splitlines()
     total = len(lines)
     start = max(0, offset - 1)
@@ -203,7 +138,12 @@ def read_file(
     selected = lines[start:end]
 
     numbered = [f"{i + start + 1:6}| {line}" for i, line in enumerate(selected)]
-    header = f"Fichier: {file_path}\nLignes {start + 1}-{end} sur {total}\n\n"
+    header = (
+        f"File: {info['relative_path']}\n"
+        f"Workspace hint: {info['workspace_hint']}\n"
+        f"Also accepted: {info['workspace_hint']}, community/{info['relative_path'].split('/', 1)[-1] if '/' in info['relative_path'] else info['relative_path']}\n"
+        f"Lines {start + 1}-{end} of {total}\n\n"
+    )
     return _truncate(header + "\n".join(numbered))
 
 
@@ -220,18 +160,19 @@ def list_directory(
                 label = "community" if root == paths.community else "enterprise"
                 entries.append(f"[{label}] {root}/")
         if not entries:
-            return "Aucune codebase Odoo montée. Vérifiez le clone Git."
+            return "No Odoo codebase mounted. Check Git clone."
         return "\n".join(entries)
 
     dir_path = resolve_safe_path(paths, path)
     if not dir_path.is_dir():
-        raise PathSecurityError(f"N'est pas un répertoire : {path}")
+        raise PathSecurityError(f"Not a directory: {path}")
 
     items: list[str] = []
     for entry in sorted(dir_path.iterdir()):
         suffix = "/" if entry.is_dir() else ""
         items.append(entry.name + suffix)
         if len(items) >= max_entries:
-            items.append(f"... [{dir_path} contient plus de {max_entries} entrées]")
+            items.append(f"... [{dir_path} contains more than {max_entries} entries]")
             break
-    return f"{dir_path}/\n\n" + "\n".join(items)
+    info = normalize_result_path(dir_path, paths)
+    return f"{info['relative_path']}/ (workspace: {info['workspace_hint']})\n\n" + "\n".join(items)

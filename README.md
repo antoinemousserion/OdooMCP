@@ -19,7 +19,6 @@ Built for **Odoo.sh development**, where your project only contains custom modul
 | 15.0    | `v15`          | 8015     |
 | 16.0    | `v16`          | 8016     |
 | 17.0    | `v17`          | 8017     |
-| 18.0    | `v18`          | 8018     |
 | 19.0    | `v19`          | 8019     |
 
 ## Prerequisites
@@ -54,19 +53,19 @@ CLONE_ENTERPRISE=true
 .\scripts\start-odoo-mcp.ps1
 ```
 
-The script shows an interactive checklist (Odoo 15–19, all selected by default). Use **↑/↓** to navigate, **Space** to toggle, **Enter** to confirm. If code already exists, it asks whether to force a fresh Git clone (**Y** by default).
+The script shows an interactive checklist (Odoo 15–19, all selected by default). Use **↑/↓** to navigate, **Space** to toggle, **Enter** to confirm. If code already exists, it asks whether to force a fresh Git clone (**N** by default — Enter keeps existing code).
 
 **Other commands:**
 
 ```powershell
-.\scripts\start-odoo-mcp.ps1 -Logs -Version 18   # follow logs
-.\scripts\start-odoo-mcp.ps1 -Stop -Version 18   # stop a container
+.\scripts\start-odoo-mcp.ps1 -Logs -Version 19   # follow logs
+.\scripts\start-odoo-mcp.ps1 -Stop -Version 19   # stop a container
 ```
 
 **Docker Compose directly:**
 
 ```bash
-docker compose --profile v18 up -d --build
+docker compose --profile v19 up -d --build
 ```
 
 On first run, the container clones Odoo community (and enterprise if configured). This can take several minutes.
@@ -91,8 +90,8 @@ Add the MCP server in **Cursor Settings → MCP** (see `cursor-mcp.example.json`
 ```json
 {
   "mcpServers": {
-    "odoo-v18": {
-      "url": "http://localhost:8018/sse"
+    "odoo-v19": {
+      "url": "http://localhost:8019/sse"
     }
   }
 }
@@ -153,9 +152,9 @@ All tools are **read-only**.
 .\scripts\start-odoo-mcp.ps1 -Stop -Version 18
 
 # Or with Docker Compose
-docker compose --profile v18 up -d --build
-docker compose logs -f odoo-mcp-v18
-docker compose --profile v18 down
+docker compose --profile v19 up -d --build
+docker compose logs -f odoo-mcp-v19
+docker compose --profile v19 down
 ```
 
 ## Adding a new Odoo version
