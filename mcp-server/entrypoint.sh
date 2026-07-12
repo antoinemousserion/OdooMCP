@@ -15,6 +15,11 @@ ENTERPRISE_URL="${ODOO_ENTERPRISE_URL:-https://github.com/odoo/enterprise.git}"
 
 log() { echo "[odoo-mcp v${VERSION}] $*"; }
 
+if [[ "${FORCE_RECLONE:-false}" == "true" ]]; then
+    log "FORCE_RECLONE active - suppression du cache Git local..."
+    rm -rf "${COMMUNITY_DIR}" "${ENTERPRISE_DIR}"
+fi
+
 clone_or_update() {
     local dir="$1"
     local url="$2"
@@ -45,14 +50,21 @@ clone_or_update "${COMMUNITY_DIR}" "${COMMUNITY_URL}" "community"
 # --- Enterprise (privé, optionnel) ---
 if [[ "${CLONE_ENTERPRISE}" == "true" ]]; then
     if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-        AUTH_URL="https://${GITHUB_TOKEN}@github.com/odoo/enterprise.git"
-        clone_or_update "${ENTERPRISE_DIR}" "${AUTH_URL}" "enterprise" || \
-            log "ATTENTION: clone enterprise échoué — vérifiez GITHUB_TOKEN et accès odoo/enterprise"
+        # x-access-token : compatible PAT classique et fine-grained
+        AUTH_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/odoo/enterprise.git"
+        if ! clone_or_update "${ENTERPRISE_DIR}" "${AUTH_URL}" "enterprise"; then
+            log "ATTENTION: clone enterprise echoue."
+            log "  1. Connecte sur https://github.com/odoo/enterprise (404 = pas d'acces au repo)"
+            log "  2. Liez votre compte GitHub sur https://www.odoo.com/my/home (partenaire/client Enterprise)"
+            log "  3. PAT classique avec scope 'repo', ou PAT fine-grained avec acces odoo/enterprise"
+            log "  4. Regenerer le token si expire, puis redemarrer le conteneur"
+            log "  Community seul reste disponible pour le MCP."
+        fi
     else
-        log "GITHUB_TOKEN absent — enterprise non cloné (community seul)"
+        log "GITHUB_TOKEN absent — enterprise non clone (community seul)"
     fi
 else
-    log "CLONE_ENTERPRISE=false — enterprise ignoré"
+    log "CLONE_ENTERPRISE=false — enterprise ignore"
 fi
 
 export ODOO_DATA_DIR="${DATA_DIR}"

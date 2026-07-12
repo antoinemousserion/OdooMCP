@@ -48,12 +48,19 @@ CLONE_ENTERPRISE=true
 
 > **Windows tip:** use forward slashes in `ODOO_VOLUME_PATH` (e.g. `C:/Users/you/Documents/MCP Odoo`).
 
-### 2. Start a version
-
-**PowerShell:**
+### 2. Start containers (interactive)
 
 ```powershell
-.\scripts\start-odoo-mcp.ps1 -Version 18
+.\scripts\start-odoo-mcp.ps1
+```
+
+The script shows an interactive checklist (Odoo 15–19, all selected by default). Use **↑/↓** to navigate, **Space** to toggle, **Enter** to confirm. If code already exists, it asks whether to force a fresh Git clone (**Y** by default).
+
+**Other commands:**
+
+```powershell
+.\scripts\start-odoo-mcp.ps1 -Logs -Version 18   # follow logs
+.\scripts\start-odoo-mcp.ps1 -Stop -Version 18   # stop a container
 ```
 
 **Docker Compose directly:**
@@ -62,11 +69,7 @@ CLONE_ENTERPRISE=true
 docker compose --profile v18 up -d --build
 ```
 
-On first run, the container clones Odoo community (and enterprise if configured). This can take several minutes. Follow progress:
-
-```powershell
-.\scripts\start-odoo-mcp.ps1 -Version 18 -Logs
-```
+On first run, the container clones Odoo community (and enterprise if configured). This can take several minutes.
 
 Cloned code is stored under:
 
@@ -140,14 +143,14 @@ All tools are **read-only**.
 ## Common commands
 
 ```powershell
-# Start Odoo 18 MCP
-.\scripts\start-odoo-mcp.ps1 -Version 18
+# Interactive startup (recommended)
+.\scripts\start-odoo-mcp.ps1
 
 # View logs
-.\scripts\start-odoo-mcp.ps1 -Version 18 -Logs
+.\scripts\start-odoo-mcp.ps1 -Logs -Version 18
 
 # Stop
-.\scripts\start-odoo-mcp.ps1 -Version 18 -Stop
+.\scripts\start-odoo-mcp.ps1 -Stop -Version 18
 
 # Or with Docker Compose
 docker compose --profile v18 up -d --build
@@ -158,7 +161,7 @@ docker compose --profile v18 down
 ## Adding a new Odoo version
 
 1. Copy a service block in `docker-compose.yml` (e.g. `odoo-mcp-v20` with port `8020`, profile `v20`, `ODOO_VERSION: "20"`)
-2. Add the version to the `ValidateSet` in `scripts/start-odoo-mcp.ps1`
+2. Add the version to `$AvailableVersions` in `scripts/start-odoo-mcp.ps1`
 3. Add the corresponding entry in your Cursor MCP config
 
 ## Security
