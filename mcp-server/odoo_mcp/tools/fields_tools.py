@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -119,28 +120,34 @@ def find_compute_dependencies(
     model_name: str,
     field_name: str,
 ) -> str:
-    fields_data = __import__("json").loads(list_model_fields(paths, model_name))
-    target = next((f for f in fields_data.get("fields", []) if f["name"] == field_name), None)
+    from odoo_mcp.tools.odoo import find_field
 
+    field_raw = find_field(paths, field_name, model_name=model_name)
+    try:
+        field_data = json.loads(field_raw)
+    except json.JSONDecodeError:
+        return json_result({"model": model_name, "field": field_name, "error": "Could not parse field lookup."})
+
+    target = next((r for r in field_data.get("results", []) if r.get("field_type")), None)
     if not target:
-        payload = {"model": model_name, "field": field_name, "error": "Field not found on model."}
-        return json_result(payload)
+        return json_result({"model": model_name, "field": field_name, "error": "Field not found on model."})
 
     compute_method = target.get("compute")
     if not compute_method and not target.get("is_computed"):
-        payload = {
+        return json_result({
             "model": model_name,
             "field": field_name,
             "message": "Field is not computed.",
-            "field_info": target,
-        }
-        return json_result(payload)
+            "field_type": target.get("field_type"),
+            "file": target.get("file"),
+        })
 
-    if compute_method and not compute_method.startswith("_compute"):
-        compute_method = f"_compute_{field_name}" if not compute_method else compute_method
+    if compute_method and not str(compute_method).startswith("_"):
+        compute_method = f"_compute_{field_name}"
 
     model_files = files_for_model(paths, model_name)
     depends_found: list[dict] = []
+    methods_to_find = {compute_method or f"_compute_{field_name}", f"_compute_{field_name}"}
 
     for rel in model_files:
         file_path = resolve_path_from_relative(paths, rel)
@@ -148,33 +155,25 @@ def find_compute_dependencies(
             continue
         lines = read_lines(file_path)
         for idx, line in enumerate(lines):
-            if compute_method and f"def {compute_method}" in line:
-                body, _ = extract_method_body(lines, idx)
-                for dm in _DEPENDS_RE.finditer(body):
-                    depends_found.append(
-                        {
-                            "file": rel,
-                            "line": idx + 1,
-                            "compute_method": compute_method,
-                            "depends": dm.group(1).strip(),
-                        }
-                    )
-            if f"def _compute_{field_name}" in line:
-                body, _ = extract_method_body(lines, idx)
-                for dm in _DEPENDS_RE.finditer(body):
-                    depends_found.append(
-                        {
-                            "file": rel,
-                            "line": idx + 1,
-                            "compute_method": f"_compute_{field_name}",
-                            "depends": dm.group(1).strip(),
-                        }
-                    )
+            if not any(f"def {meth}" in line for meth in methods_to_find):
+                continue
+            body, _ = extract_method_body(lines, idx)
+            for dm in _DEPENDS_RE.finditer(body):
+                depends_found.append(
+                    {
+                        "file": rel,
+                        "line": idx + 1,
+                        "compute_method": next(m for m in methods_to_find if f"def {m}" in line),
+                        "depends": dm.group(1).strip()[:200],
+                    }
+                )
 
     payload = {
         "model": model_name,
         "field": field_name,
-        "field_info": target,
+        "field_type": target.get("field_type"),
+        "compute": target.get("compute"),
+        "store": target.get("store"),
         "compute_method": compute_method or f"_compute_{field_name}",
         "depends": depends_found,
     }
@@ -182,6 +181,17 @@ def find_compute_dependencies(
     if warning:
         payload["warning"] = warning
     return json_result(payload)
+
+
+def _is_likely_mixin(model_name: str, inherited: str) -> bool:
+    if inherited == model_name:
+        return False
+    if inherited.startswith(model_name + "."):
+        return False
+    base = model_name.split(".")[0]
+    if inherited.startswith(base + ".") and "mixin" not in inherited and "thread" not in inherited:
+        return False
+    return True
 
 
 def find_model_mixins(paths: OdooPaths, model_name: str) -> str:
@@ -194,20 +204,19 @@ def find_model_mixins(paths: OdooPaths, model_name: str) -> str:
         if not file_path:
             continue
         text = read_lines(file_path)
-        content = "\n".join(text)
         module = module_from_path(paths, file_path)
 
         for line_no, line in enumerate(text, 1):
             single = re.search(r"""_inherit\s*=\s*['"]([^'"]+)['"]""", line)
             if single:
                 val = single.group(1)
-                if val != model_name and val not in seen:
+                if _is_likely_mixin(model_name, val) and val not in seen:
                     seen.add(val)
                     mixins.append({"mixin": val, "file": rel, "line": line_no, "module": module, "style": "single"})
             list_m = re.search(r"""_inherit\s*=\s*\[(.*?)\]""", line)
             if list_m:
                 for val in re.findall(r"""['"]([^'"]+)['"]""", list_m.group(1)):
-                    if val != model_name and val not in seen:
+                    if _is_likely_mixin(model_name, val) and val not in seen:
                         seen.add(val)
                         mixins.append({"mixin": val, "file": rel, "line": line_no, "module": module, "style": "list"})
 

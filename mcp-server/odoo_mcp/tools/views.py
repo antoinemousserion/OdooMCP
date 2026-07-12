@@ -3,44 +3,63 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from odoo_mcp.config import OdooPaths
+from odoo_mcp.security import resolve_search_path
 from odoo_mcp.tools import rg as rg_tools
 from odoo_mcp.tools.model_utils import json_result, module_from_path, read_lines, resolve_path_from_relative
 from odoo_mcp.tools.paths_util import enterprise_warning
+from odoo_mcp.tools.xml_utils import (
+    detect_view_type,
+    extract_xml_element,
+    file_declares_model,
+    model_xml_patterns,
+    parse_xml_attrs,
+    res_model_xml_patterns,
+)
 
 
-def find_view_for_model(paths: OdooPaths, model_name: str, *, max_results: int = 50) -> str:
-    pattern = rf'model="{re.escape(model_name)}"'
-    alt = rf"model='{re.escape(model_name)}'"
+def _module_scope(paths: OdooPaths, model_name: str) -> list[Path]:
+    module = model_name.split(".")[0]
+    try:
+        return resolve_search_path(paths, module)
+    except Exception:
+        return resolve_search_path(paths, "all")
+
+
+def find_view_for_model(paths: OdooPaths, model_name: str, *, max_results: int = 30) -> str:
+    search_paths = _module_scope(paths, model_name)
+    patterns = model_xml_patterns(model_name)
     results: list[dict] = []
     seen: set[tuple[str, int]] = set()
-    search_paths = [p for p in paths.search_roots if p.is_dir()]
 
-    for pat in (pattern, alt):
-        matches, _ = rg_tools.run_rg(
-            paths, pat, search_paths, scope="all", glob="**/*.xml", file_type=None, max_results=200, fixed_string=True
+    matches, _ = rg_tools.run_rg(
+        paths,
+        patterns[0],
+        search_paths,
+        scope="all",
+        glob="**/views/**/*.xml",
+        file_type=None,
+        max_results=max_results * 3,
+        fixed_string=True,
+        patterns=patterns,
+    )
+    for m in matches:
+        key = (m.relative_path, m.line)
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append(
+            {
+                "file": m.relative_path,
+                "workspace_hint": m.workspace_hint,
+                "line": m.line,
+                "module": module_from_path(paths, Path(m.file)),
+                "view_type": detect_view_type(m.content),
+                "content": m.content.strip()[:200],
+            }
         )
-        for m in matches:
-            key = (m.relative_path, m.line)
-            if key in seen:
-                continue
-            seen.add(key)
-            view_type = "unknown"
-            for vt in ("form", "tree", "kanban", "search", "calendar", "graph", "pivot"):
-                if f"<{vt}" in m.content or f"<{vt} " in m.content:
-                    view_type = vt
-                    break
-            results.append(
-                {
-                    "file": m.relative_path,
-                    "workspace_hint": m.workspace_hint,
-                    "line": m.line,
-                    "module": module_from_path(paths, __import__("pathlib").Path(m.file)),
-                    "view_type": view_type,
-                    "content": m.content.strip()[:300],
-                }
-            )
 
     payload = {
         "model": model_name,
@@ -59,30 +78,39 @@ def get_button_context(
     model_name: str,
     button_name: str,
 ) -> str:
+    search_paths = _module_scope(paths, model_name)
     patterns = [f'name="{button_name}"', f"name='{button_name}'"]
     results: list[dict] = []
-    search_paths = [p for p in paths.search_roots if p.is_dir()]
 
-    for pat in patterns:
-        matches, _ = rg_tools.run_rg(
-            paths, pat, search_paths, scope="all", glob="**/*.xml", file_type=None, max_results=50, fixed_string=True
+    matches, _ = rg_tools.run_rg(
+        paths,
+        patterns[0],
+        search_paths,
+        scope="all",
+        glob="**/views/**/*.xml",
+        file_type=None,
+        max_results=30,
+        fixed_string=True,
+        patterns=patterns,
+    )
+    for m in matches:
+        file_path = Path(m.file)
+        if model_name and not file_declares_model(file_path, model_name):
+            if model_name.split(".")[0] not in m.relative_path:
+                continue
+        lines = read_lines(file_path)
+        fragment = extract_xml_element(lines, m.line - 1)
+        attrs = parse_xml_attrs(fragment)
+        results.append(
+            {
+                "file": m.relative_path,
+                "workspace_hint": m.workspace_hint,
+                "line": m.line,
+                "button_name": button_name,
+                "attrs": attrs,
+                "content": fragment[:400],
+            }
         )
-        for m in matches:
-            if model_name and f'model="{model_name}"' not in m.content and f"model='{model_name}'" not in m.content:
-                # include if file likely belongs to model module
-                if model_name.split(".")[0] not in m.relative_path:
-                    continue
-            attrs = _parse_xml_attrs(m.content)
-            results.append(
-                {
-                    "file": m.relative_path,
-                    "workspace_hint": m.workspace_hint,
-                    "line": m.line,
-                    "button_name": button_name,
-                    "attrs": attrs,
-                    "content": m.content.strip()[:400],
-                }
-            )
 
     payload = {"model": model_name, "button_name": button_name, "buttons": results}
     warning = enterprise_warning(paths, "all")
@@ -91,38 +119,28 @@ def get_button_context(
     return json_result(payload)
 
 
-def _parse_xml_attrs(line: str) -> dict:
-    attrs: dict = {}
-    for key in ("name", "type", "string", "class", "icon", "confirm", "context", "groups", "invisible", "readonly", "states"):
-        m = re.search(rf'{key}="([^"]*)"', line)
-        if m:
-            attrs[key] = m.group(1)
-        m2 = re.search(rf"{key}='([^']*)'", line)
-        if m2:
-            attrs[key] = m2.group(1)
-    return attrs
-
-
-def find_window_action(paths: OdooPaths, model_name: str, *, max_results: int = 30) -> str:
+def find_window_action(paths: OdooPaths, model_name: str, *, max_results: int = 20) -> str:
+    search_paths = _module_scope(paths, model_name)
+    patterns = res_model_xml_patterns(model_name)
     results: list[dict] = []
     seen: set[tuple[str, int]] = set()
-    search_paths = [p for p in paths.search_roots if p.is_dir()]
 
     matches, _ = rg_tools.run_rg(
         paths,
-        re.escape(model_name),
+        patterns[0],
         search_paths,
         scope="all",
         glob="**/*.xml",
         file_type=None,
-        max_results=200,
+        max_results=max_results * 3,
         fixed_string=True,
+        patterns=patterns,
     )
     for m in matches:
-        if model_name not in m.content:
-            continue
-        if "act_window" not in m.content and "res_model" not in m.content:
-            continue
+        if "act_window" not in m.content and "ir.actions.act_window" not in m.content:
+            # keep field-only lines in action xml files
+            if "res_model" not in m.content:
+                continue
         key = (m.relative_path, m.line)
         if key in seen:
             continue
@@ -132,7 +150,7 @@ def find_window_action(paths: OdooPaths, model_name: str, *, max_results: int = 
                 "file": m.relative_path,
                 "workspace_hint": m.workspace_hint,
                 "line": m.line,
-                "content": m.content.strip()[:400],
+                "content": m.content.strip()[:250],
             }
         )
 
@@ -148,8 +166,7 @@ def find_window_action(paths: OdooPaths, model_name: str, *, max_results: int = 
 
 
 def resolve_view_inheritance(paths: OdooPaths, view_xml_id: str | None = None, *, file_hint: str | None = None) -> str:
-    """Résout inherit_id dans un fichier vue ou cherche par xmlid."""
-    search_paths = [p for p in paths.search_roots if p.is_dir()]
+    search_paths = resolve_search_path(paths, "all")
     chain: list[dict] = []
 
     if file_hint:
@@ -160,7 +177,7 @@ def resolve_view_inheritance(paths: OdooPaths, view_xml_id: str | None = None, *
     if view_xml_id:
         pat = re.escape(view_xml_id.split(".")[-1])
         matches, _ = rg_tools.run_rg(
-            paths, pat, search_paths, scope="all", glob="**/*.xml", max_results=20, fixed_string=True
+            paths, pat, search_paths, scope="all", glob="**/views/**/*.xml", max_results=10, fixed_string=True
         )
         for m in matches:
             if view_xml_id.replace(".", "_") in m.content or view_xml_id in m.content:
@@ -180,7 +197,7 @@ def _inherit_chain_from_file(file_path, paths) -> list[dict]:
     for i, line in enumerate(lines, 1):
         m = re.search(r'inherit_id="([^"]+)"', line) or re.search(r"inherit_id='([^']+)'", line)
         if m:
-            chain.append({"inherits_from": m.group(1), "line": i, "content": line.strip()})
+            chain.append({"inherits_from": m.group(1), "line": i, "content": line.strip()[:200]})
     return chain
 
 
@@ -189,7 +206,7 @@ def find_xml_action(
     action_name: str,
     *,
     model: str | None = None,
-    max_results: int = 30,
+    max_results: int = 20,
 ) -> str:
     from odoo_mcp.tools.odoo import find_xml_action as _base
 

@@ -60,18 +60,32 @@ def resolve_safe_path(paths: OdooPaths, relative: str) -> Path:
     )
 
 
+def _is_under(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
 def resolve_search_path(paths: OdooPaths, scope: str | None) -> list[Path]:
     """Détermine les répertoires de recherche selon le scope."""
+    addon_dirs = [p for p in paths.addon_roots if p.is_dir()]
+
     if not scope or scope == "all":
-        return [p for p in paths.search_roots if p.is_dir()]
+        return addon_dirs or [p for p in paths.search_roots if p.is_dir()]
 
     scope = scope.strip().lower()
     if scope == "community":
-        return [paths.community] if paths.community.is_dir() else []
+        if not paths.community.is_dir():
+            return []
+        comm = paths.community.resolve()
+        return [p for p in addon_dirs if _is_under(p, comm)] or [paths.community]
     if scope == "enterprise":
-        if paths.enterprise and paths.enterprise.is_dir():
-            return [paths.enterprise]
-        return []
+        if not paths.enterprise or not paths.enterprise.is_dir():
+            return []
+        ent = paths.enterprise.resolve()
+        return [p for p in addon_dirs if _is_under(p, ent)] or [paths.enterprise]
 
     # Scope = nom de module addon
     for addon_root in paths.addon_roots:

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -13,6 +15,7 @@ from odoo_mcp.config import OdooPaths
 from odoo_mcp.tools.paths_util import enterprise_warning, normalize_result_path
 
 RG_TIMEOUT = 60
+LOGGER = logging.getLogger("odoo_mcp.rg")
 
 
 @dataclass
@@ -43,6 +46,7 @@ def run_rg(
     max_results: int = 100,
     case_insensitive: bool = False,
     fixed_string: bool = False,
+    patterns: list[str] | None = None,
 ) -> tuple[list[RgMatch], str | None]:
     warning = enterprise_warning(paths, scope)
 
@@ -66,24 +70,60 @@ def run_rg(
         cmd.append("-i")
     if context:
         cmd.extend(["-C", str(context)])
+    for exclude in ("!.git/**", "!**/__pycache__/**", "!**/node_modules/**"):
+        cmd.extend(["--glob", exclude])
     if glob:
         cmd.extend(["--glob", glob])
     if file_type:
         cmd.extend(["--type", file_type])
     if fixed_string:
         cmd.append("-F")
-    cmd.extend(["--", pattern])
+    search_patterns = patterns if patterns else [pattern]
+    for search_pattern in search_patterns:
+        cmd.extend(["-e", search_pattern])
+    cmd.append("--")
     cmd.extend(str(p) for p in search_paths if p.is_dir())
 
+    start = time.perf_counter()
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=RG_TIMEOUT)
     except subprocess.TimeoutExpired:
+        LOGGER.warning(
+            "rg timeout pattern=%r scope=%s paths=%d glob=%s fixed=%s after %dms",
+            pattern[:120],
+            scope,
+            len(search_paths),
+            glob,
+            fixed_string,
+            RG_TIMEOUT * 1000,
+        )
         return [], warning
 
+    elapsed_ms = (time.perf_counter() - start) * 1000
+
     if result.returncode not in (0, 1):
+        LOGGER.warning(
+            "rg error rc=%s pattern=%r scope=%s duration_ms=%.1f stderr=%s",
+            result.returncode,
+            pattern[:120],
+            scope,
+            elapsed_ms,
+            (result.stderr or "").strip()[:200],
+        )
         return [], warning
 
     matches = _parse_rg_json(result.stdout, paths, max_results)
+    LOGGER.info(
+        "rg pattern=%r scope=%s paths=%d glob=%s type=%s fixed=%s matches=%d duration_ms=%.1f",
+        (search_patterns[0] if len(search_patterns) == 1 else f"{len(search_patterns)} patterns")[:120],
+        scope,
+        len(search_paths),
+        glob,
+        file_type,
+        fixed_string,
+        len(matches),
+        elapsed_ms,
+    )
     return matches, warning
 
 

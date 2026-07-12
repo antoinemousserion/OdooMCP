@@ -13,6 +13,7 @@ from odoo_mcp.tools import rg as rg_tools
 from odoo_mcp.tools.model_utils import parse_field_attributes, read_lines
 from odoo_mcp.tools.paths_util import enterprise_warning, normalize_result_path, resolve_scope
 from odoo_mcp.tools.search import MAX_OUTPUT_CHARS, _truncate
+from odoo_mcp.tools.xml_utils import file_declares_model
 
 _NAME_RE = re.compile(r"""_name\s*=\s*['"]([^'"]+)['"]""")
 _INHERIT_SINGLE_RE = re.compile(r"""_inherit\s*=\s*['"]([^'"]+)['"]""")
@@ -77,7 +78,15 @@ def _parse_inherit_values(raw: str) -> list[str]:
     return values
 
 
+_model_scan_cache: dict[tuple[str, str, str], tuple[list[dict], list[dict]]] = {}
+
+
 def _scan_model_matches(paths: OdooPaths, model_name: str, scope: str = "all") -> tuple[list[dict], list[dict]]:
+    cache_key = (paths.version, model_name, scope)
+    cached = _model_scan_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     definitions: list[dict] = []
     inherits: list[dict] = []
     seen_def: set[tuple[str, int]] = set()
@@ -88,50 +97,55 @@ def _scan_model_matches(paths: OdooPaths, model_name: str, scope: str = "all") -
     except PathSecurityError:
         return definitions, inherits
 
-    # Ripgrep fixed-string : rapide sur toute la codebase
-    rg_patterns: list[tuple[str, str]] = [
-        (f"_name = '{model_name}'", "_name"),
-        (f'_name = "{model_name}"', "_name"),
-        (f"_inherit = '{model_name}'", "_inherit"),
-        (f'_inherit = "{model_name}"', "_inherit"),
+    fixed_patterns = [
+        f"_name = '{model_name}'",
+        f'_name = "{model_name}"',
+        f"_inherit = '{model_name}'",
+        f'_inherit = "{model_name}"',
     ]
 
-    for fixed, match_type in rg_patterns:
-        matches, _ = rg_tools.run_rg(
-            paths,
-            fixed,
-            search_paths,
-            scope=scope,
-            glob="**/*.py",
-            file_type="py",
-            max_results=200,
-            fixed_string=True,
-        )
-        for m in matches:
-            key = (m.relative_path, m.line)
-            entry = {
+    matches, _ = rg_tools.run_rg(
+        paths,
+        fixed_patterns[0],
+        search_paths,
+        scope=scope,
+        glob="**/*.py",
+        file_type="py",
+        max_results=400,
+        fixed_string=True,
+        patterns=fixed_patterns,
+    )
+    for m in matches:
+        content = m.content
+        if any(p.startswith("_name") and p in content for p in fixed_patterns[:2]):
+            match_type = "_name"
+            bucket, seen = definitions, seen_def
+        else:
+            match_type = "_inherit"
+            bucket, seen = inherits, seen_inh
+        key = (m.relative_path, m.line)
+        if key in seen:
+            continue
+        seen.add(key)
+        bucket.append(
+            {
                 "file": m.relative_path,
                 "workspace_hint": m.workspace_hint,
                 "line": m.line,
                 "type": match_type,
                 "module": _module_from_path(paths, Path(m.file)),
-                "content": m.content.strip(),
+                "content": content.strip(),
             }
-            if match_type == "_name" and key not in seen_def:
-                seen_def.add(key)
-                definitions.append(entry)
-            elif match_type == "_inherit" and key not in seen_inh:
-                seen_inh.add(key)
-                inherits.append(entry)
+        )
 
-    # _inherit = ['a', 'b', model] — regex ripgrep sur une seule ligne
     list_patterns = [
-        rf"_inherit\s*=\s*\[[^\]]*['\"]{re.escape(model_name)}['\"]",
+        rf"_inherit\s*=\s*\[[^\]]*'{re.escape(model_name)}'",
+        rf'_inherit\s*=\s*\[[^\]]*"{re.escape(model_name)}"',
     ]
-    for pattern in list_patterns:
+    for list_pattern in list_patterns:
         matches, _ = rg_tools.run_rg(
             paths,
-            pattern,
+            list_pattern,
             search_paths,
             scope=scope,
             glob="**/*.py",
@@ -154,7 +168,9 @@ def _scan_model_matches(paths: OdooPaths, model_name: str, scope: str = "all") -
                 }
             )
 
-    return definitions, inherits
+    result = (definitions, inherits)
+    _model_scan_cache[cache_key] = result
+    return result
 
 
 def find_model(
@@ -216,7 +232,7 @@ def _files_for_model_filter(
     try:
         search_paths = resolve_search_path(paths, module)
     except PathSecurityError:
-        search_paths = [p for p in paths.search_roots if p.is_dir()]
+        search_paths = resolve_search_path(paths, "all")
 
     for root in search_paths:
         if not root.is_dir():
@@ -384,54 +400,60 @@ def find_xml_action(
     action_name: str,
     *,
     model: str | None = None,
-    max_results: int = 30,
+    max_results: int = 20,
 ) -> str:
-    patterns = [
-        rf'name="{re.escape(action_name)}"',
-        rf"name='{re.escape(action_name)}'",
-    ]
+    if model:
+        try:
+            search_paths = resolve_search_path(paths, model.split(".")[0])
+        except PathSecurityError:
+            search_paths = resolve_search_path(paths, "all")
+        glob = "**/views/**/*.xml"
+    else:
+        search_paths = resolve_search_path(paths, "all")
+        glob = "**/*.xml"
+
+    patterns = [f'name="{action_name}"', f"name='{action_name}'"]
     results: list[dict] = []
     seen: set[tuple[str, int]] = set()
 
-    for pattern in patterns:
-        matches, _ = rg_tools.run_rg(
-            paths,
-            pattern,
-            [p for p in paths.search_roots if p.is_dir()],
-            scope="all",
-            glob="**/*.xml",
-            file_type=None,
-            max_results=max_results * 2,
-            fixed_string=True,
+    matches, _ = rg_tools.run_rg(
+        paths,
+        patterns[0],
+        search_paths,
+        scope="all",
+        glob=glob,
+        file_type=None,
+        max_results=max_results * 2,
+        fixed_string=True,
+        patterns=patterns,
+    )
+    for m in matches:
+        if model:
+            fp = Path(m.file)
+            if model.split(".")[0] not in m.relative_path:
+                continue
+            if not file_declares_model(fp, model):
+                continue
+        key = (m.relative_path, m.line)
+        if key in seen:
+            continue
+        seen.add(key)
+        action_type = "object" if 'type="object"' in m.content or "type='object'" in m.content else "unknown"
+        results.append(
+            {
+                "file": m.relative_path,
+                "workspace_hint": m.workspace_hint,
+                "line": m.line,
+                "content": m.content.strip()[:200],
+                "action_type": action_type,
+            }
         )
-        for m in matches:
-            if model and model not in m.content and action_name not in m.content:
-                continue
-            key = (m.relative_path, m.line)
-            if key in seen:
-                continue
-            seen.add(key)
-            action_type = "unknown"
-            if "type=\"object\"" in m.content or "type='object'" in m.content:
-                action_type = "object"
-            elif "type=\"action\"" in m.content or "type='action'" in m.content:
-                action_type = "action"
-            results.append(
-                {
-                    "file": m.relative_path,
-                    "workspace_hint": m.workspace_hint,
-                    "line": m.line,
-                    "content": m.content.strip(),
-                    "action_type": action_type,
-                }
-            )
 
     payload = {
         "action": action_name,
         "model_filter": model,
         "results": results[:max_results],
         "results_total": len(results),
-        "results_truncated": len(results) > max_results,
     }
     warning = enterprise_warning(paths, "all")
     if warning:
@@ -459,7 +481,7 @@ def find_references(
         matches, _ = rg_tools.run_rg(
             paths,
             pattern,
-            [p for p in paths.search_roots if p.is_dir()],
+            resolve_search_path(paths, "all"),
             scope="all",
             file_type=None,
             max_results=max_results,

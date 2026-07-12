@@ -4,6 +4,7 @@
 # Démarrer une version :  docker compose --profile v19 up -d --build
 # Arrêter une version  :  docker compose --profile v19 down
 # Logs                 :  docker compose logs -f odoo-mcp-v19
+# Autostart Windows    :  .\scripts\install-autostart.ps1
 #
 # Volume local : ${ODOO_VOLUME_PATH} (défini dans .env)
 # Structure    : v18/community, v18/enterprise, v17/community, etc.
@@ -13,7 +14,7 @@ x-odoo-mcp: &odoo-mcp-defaults
   build:
     context: ./mcp-server
     dockerfile: Dockerfile
-  restart: unless-stopped
+  restart: always
   env_file:
     - path: .env
       required: false

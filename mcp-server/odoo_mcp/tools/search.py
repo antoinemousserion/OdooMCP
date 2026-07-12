@@ -94,18 +94,36 @@ def glob_files(
     from odoo_mcp.tools.paths_util import enterprise_warning
 
     warning = enterprise_warning(paths, scope)
+    glob_arg = effective_pattern if effective_pattern.startswith("**/") else f"**/{effective_pattern}"
     found: list[dict[str, str]] = []
 
-    glob_expr = effective_pattern if effective_pattern.startswith("**/") else f"**/{effective_pattern}"
-    for root in search_paths:
-        for match in root.glob(glob_expr):
-            if match.is_file():
-                info = normalize_result_path(match, paths)
-                found.append(info)
-                if len(found) >= max_results:
-                    break
-        if len(found) >= max_results:
-            break
+    import shutil
+    import subprocess
+
+    if shutil.which("rg"):
+        cmd = ["rg", "--files", "-g", glob_arg, "--glob", "!.git/**"]
+        cmd.extend(str(p) for p in search_paths if p.is_dir())
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            if result.returncode in (0, 1):
+                for line in result.stdout.splitlines():
+                    path = Path(line.strip())
+                    if path.is_file():
+                        found.append(normalize_result_path(path, paths))
+                        if len(found) >= max_results:
+                            break
+        except subprocess.TimeoutExpired:
+            pass
+
+    if not found:
+        for root in search_paths:
+            for match in root.glob(glob_arg):
+                if match.is_file():
+                    found.append(normalize_result_path(match, paths))
+                    if len(found) >= max_results:
+                        break
+            if len(found) >= max_results:
+                break
 
     if not found:
         msg = f"No files for pattern {effective_pattern!r}."

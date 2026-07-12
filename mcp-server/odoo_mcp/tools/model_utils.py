@@ -99,6 +99,7 @@ def extract_method_body(lines: list[str], def_line_idx: int) -> tuple[str, int]:
 def analyze_method_body(body: str, method_name: str) -> dict:
     calls_super = bool(
         re.search(rf"super\s*\([^)]*\)\s*\.\s*{re.escape(method_name)}\s*\(", body)
+        or re.search(rf"super\s*\(.+\)\s*\.\s*{re.escape(method_name)}\s*\(", body)
         or re.search(r"super\s*\(\s*\)\s*\.", body)
         or "super()." in body
     )
@@ -107,14 +108,14 @@ def analyze_method_body(body: str, method_name: str) -> dict:
     return {
         "calls_super": calls_super,
         "timing": "wraps_super" if calls_super else "standalone",
-        "self_method_calls": self_calls[:25],
-        "side_effect_calls": private_calls[:15],
+        "self_method_calls": self_calls[:10],
+        "side_effect_calls": private_calls[:8],
     }
 
 
 def parse_field_attributes(field_line: str, continuation: str = "") -> dict:
     full = field_line + continuation
-    attrs: dict = {"raw": full.strip()[:500]}
+    attrs: dict = {}
     for key in ("related", "compute", "inverse", "search"):
         m = re.search(rf"{key}\s*=\s*['\"]([^'\"]+)['\"]", full)
         if m:
@@ -135,19 +136,102 @@ def parse_field_attributes(field_line: str, continuation: str = "") -> dict:
     return attrs
 
 
+def _sanitize_json_value(obj: object) -> object:
+    if isinstance(obj, str):
+        return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", obj)
+    if isinstance(obj, dict):
+        return {k: _sanitize_json_value(v) for k, v in obj.items() if k != "raw"}
+    if isinstance(obj, list):
+        return [_sanitize_json_value(v) for v in obj]
+    return obj
+
+
+def _trim_payload(obj: object, *, max_list: int = 30, max_str: int = 300) -> object:
+    if isinstance(obj, str):
+        return obj if len(obj) <= max_str else obj[:max_str] + "..."
+    if isinstance(obj, dict):
+        return {k: _trim_payload(v, max_list=max_list, max_str=max_str) for k, v in obj.items() if k != "raw"}
+    if isinstance(obj, list):
+        trimmed = [_trim_payload(v, max_list=max_list, max_str=max_str) for v in obj[:max_list]]
+        return trimmed
+    return obj
+
+
+def json_result(payload: dict, *, max_chars: int = 40_000) -> str:
+    from odoo_mcp.tools.search import _truncate
+
+    cleaned = _sanitize_json_value(payload)
+    text = json.dumps(cleaned, indent=2, ensure_ascii=False)
+    if len(text) <= max_chars:
+        return text
+    smaller = _trim_payload(cleaned)
+    smaller["_response_truncated"] = True
+    text = json.dumps(smaller, indent=2, ensure_ascii=False)
+    if len(text) <= max_chars:
+        return text
+    return _truncate(text[:max_chars] + "\n}\n")  # fallback — should not happen often
+
+
+_depends_cache: dict[str, list[str]] | None = None
+_depends_cache_key: str | None = None
+
+
+def _find_manifest_files(paths: OdooPaths) -> list[Path]:
+    import shutil
+    import subprocess
+
+    search_paths = [p for p in paths.addon_roots if p.is_dir()]
+    if not search_paths:
+        return []
+
+    if not shutil.which("rg"):
+        manifests: list[Path] = []
+        for root in search_paths:
+            manifests.extend(root.rglob("__manifest__.py"))
+        return manifests
+
+    cmd = ["rg", "--files", "-g", "__manifest__.py", "--glob", "!.git/**"]
+    cmd.extend(str(p) for p in search_paths)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        return []
+    if result.returncode not in (0, 1):
+        return []
+    return [Path(line.strip()) for line in result.stdout.splitlines() if line.strip()]
+
+
 def load_module_depends(paths: OdooPaths) -> dict[str, list[str]]:
+    global _depends_cache, _depends_cache_key
+
+    cache_key = paths.version
+    if _depends_cache is not None and _depends_cache_key == cache_key:
+        return _depends_cache
+
+    import logging
+    import time
+
+    logger = logging.getLogger("odoo_mcp")
+    start = time.perf_counter()
     depends: dict[str, list[str]] = {}
-    for root in paths.search_roots:
-        if not root.is_dir():
-            continue
-        for manifest in root.rglob("__manifest__.py"):
-            module = module_from_path(paths, manifest.parent)
-            try:
-                data = ast.literal_eval(manifest.read_text(encoding="utf-8", errors="replace"))
-                if isinstance(data, dict):
-                    depends[module] = list(data.get("depends", []))
-            except (SyntaxError, ValueError):
-                depends[module] = []
+    manifest_files = _find_manifest_files(paths)
+    for manifest in manifest_files:
+        module = module_from_path(paths, manifest.parent)
+        try:
+            data = ast.literal_eval(manifest.read_text(encoding="utf-8", errors="replace"))
+            if isinstance(data, dict):
+                depends[module] = list(data.get("depends", []))
+        except (SyntaxError, ValueError):
+            depends[module] = []
+
+    _depends_cache = depends
+    _depends_cache_key = cache_key
+    logger.info(
+        "load_module_depends built cache: modules=%d manifests=%d duration_ms=%.1f",
+        len(depends),
+        len(manifest_files),
+        (time.perf_counter() - start) * 1000,
+    )
     return depends
 
 
@@ -166,8 +250,3 @@ def module_load_rank(module: str, depends_map: dict[str, list[str]]) -> int:
 
     return depth(module)
 
-
-def json_result(payload: dict) -> str:
-    from odoo_mcp.tools.search import _truncate
-
-    return _truncate(json.dumps(payload, indent=2, ensure_ascii=False))
