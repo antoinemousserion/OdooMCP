@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "odoo-v18": {
+      "url": "http://localhost:8018/sse"
+    },
+    "odoo-v17": {
+      "url": "http://localhost:8017/sse"
+    },
+    "odoo-v16": {
+      "url": "http://localhost:8016/sse"
+    }
+  }
+}

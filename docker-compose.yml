@@ -1,0 +1,72 @@
+# =============================================================================
+# Odoo MCP — Docker Compose
+# =============================================================================
+# Démarrer une version :  docker compose --profile v18 up -d --build
+# Arrêter une version  :  docker compose --profile v18 down
+# Logs                 :  docker compose logs -f odoo-mcp-v18
+#
+# Volume local : ${ODOO_VOLUME_PATH} (défini dans .env)
+# Structure    : v18/community, v18/enterprise, v17/community, etc.
+# =============================================================================
+
+x-odoo-mcp: &odoo-mcp-defaults
+  build:
+    context: ./mcp-server
+    dockerfile: Dockerfile
+  restart: unless-stopped
+  env_file:
+    - path: .env
+      required: false
+  volumes:
+    - "${ODOO_VOLUME_PATH:-C:/Users/antoi/Documents/MCP Odoo}:/data/odoo"
+
+services:
+  odoo-mcp-v15:
+    <<: *odoo-mcp-defaults
+    container_name: odoo-mcp-v15
+    profiles: ["v15"]
+    environment:
+      ODOO_VERSION: "15"
+      MCP_PORT: "8015"
+    ports:
+      - "8015:8015"
+
+  odoo-mcp-v16:
+    <<: *odoo-mcp-defaults
+    container_name: odoo-mcp-v16
+    profiles: ["v16"]
+    environment:
+      ODOO_VERSION: "16"
+      MCP_PORT: "8016"
+    ports:
+      - "8016:8016"
+
+  odoo-mcp-v17:
+    <<: *odoo-mcp-defaults
+    container_name: odoo-mcp-v17
+    profiles: ["v17"]
+    environment:
+      ODOO_VERSION: "17"
+      MCP_PORT: "8017"
+    ports:
+      - "8017:8017"
+
+  odoo-mcp-v18:
+    <<: *odoo-mcp-defaults
+    container_name: odoo-mcp-v18
+    profiles: ["v18"]
+    environment:
+      ODOO_VERSION: "18"
+      MCP_PORT: "8018"
+    ports:
+      - "8018:8018"
+
+  odoo-mcp-v19:
+    <<: *odoo-mcp-defaults
+    container_name: odoo-mcp-v19
+    profiles: ["v19"]
+    environment:
+      ODOO_VERSION: "19"
+      MCP_PORT: "8019"
+    ports:
+      - "8019:8019"
