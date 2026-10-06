@@ -27,6 +27,31 @@ def _coalesce(*values: str | None) -> str | None:
     return None
 
 
+_TEST_EXCLUDES = ("!**/tests/**", "!**/test_*/**")
+# Traductions (des centaines de lignes par module) et librairies JS vendorisées.
+_NOISE_EXCLUDES = ("!**/i18n/**", "!**/i18n_extra/**", "!**/static/lib/**")
+
+
+def _default_excludes(
+    glob: str | None, file_type: str | None, scope: str, include_tests: bool
+) -> tuple[list[str], list[str]]:
+    """Globs d'exclusion par défaut + libellés pour la note, sauf si le glob/type/scope les cible explicitement."""
+    glob_lower = (glob or "").lower()
+    types = {t.strip().lower() for t in (file_type or "").split(",")}
+    excludes: list[str] = []
+    labels: list[str] = []
+    if not include_tests and "test" not in glob_lower and not scope.lower().startswith("test_"):
+        excludes.extend(_TEST_EXCLUDES)
+        labels.append("tests excluded (include_tests=True to search them)")
+    if "i18n" not in glob_lower and "po" not in types:
+        excludes.extend(_NOISE_EXCLUDES[:2])
+        labels.append("i18n excluded")
+    if "static/lib" not in glob_lower:
+        excludes.append(_NOISE_EXCLUDES[2])
+        labels.append("static/lib excluded")
+    return excludes, labels
+
+
 def search_code(
     paths: OdooPaths,
     pattern: str | None = None,
@@ -35,39 +60,48 @@ def search_code(
     scope: str = "all",
     glob: str | None = None,
     glob_pattern: str | None = None,
-    file_type: str | None = "py",
+    file_type: str | None = None,
     context: int = 0,
     max_results: int = DEFAULT_MAX_RESULTS,
     case_insensitive: bool = False,
     fixed_string: bool = False,
+    include_tests: bool = False,
 ) -> str:
     effective_pattern = _coalesce(pattern, query)
     if not effective_pattern:
         return "Error: provide 'pattern' or 'query'."
 
+    # Quote hint: Python source often uses single quotes; XML attributes use double quotes.
+    # Pass query='name=\"foo\"' for XML doubles; query="name='foo'" for XML singles.
+
     effective_glob = _coalesce(glob_pattern, glob)
+    effective_type = _coalesce(file_type)
     try:
         search_paths = resolve_search_path(paths, scope)
     except PathSecurityError as exc:
         return f"Error: {exc}"
 
+    excludes, exclude_labels = _default_excludes(effective_glob, effective_type, scope, include_tests)
     matches, warning = rg_tools.run_rg(
         paths,
         effective_pattern,
         search_paths,
         scope=scope,
         glob=effective_glob,
-        file_type=file_type,
+        file_type=effective_type,
         context=context,
         max_results=max_results,
         case_insensitive=case_insensitive,
         fixed_string=fixed_string,
+        exclude_globs=excludes,
     )
+    filters = [f"file_type={effective_type}" if effective_type else "all file types", *exclude_labels]
     return rg_tools.format_matches(
         matches,
         pattern=effective_pattern,
         max_results=max_results,
         warning=warning,
+        note="Filters: " + ", ".join(filters),
     )
 
 
@@ -144,12 +178,20 @@ def read_file(
     offset: int = 1,
     limit: int = 200,
 ) -> str:
-    file_path = resolve_safe_path(paths, path)
+    try:
+        file_path = resolve_safe_path(paths, path)
+    except PathSecurityError as exc:
+        return f"Error: {exc}"
+
     if not file_path.is_file():
-        raise PathSecurityError(f"Not a file: {path}")
+        return f"Error: Not a file: {path!r}"
 
     info = normalize_result_path(file_path, paths)
-    lines = file_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    try:
+        lines = file_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as exc:
+        return f"Error: Cannot read {path!r}: {exc}"
+
     total = len(lines)
     start = max(0, offset - 1)
     end = min(total, start + limit)

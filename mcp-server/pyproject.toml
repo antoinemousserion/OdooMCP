@@ -4,7 +4,7 @@ version = "1.0.0"
 description = "MCP readonly pour explorer les codebases Odoo (community + enterprise)"
 requires-python = ">=3.11"
 dependencies = [
-    "mcp[cli]>=1.6.0",
+    "mcp[cli]>=1.6.0,<2",
     "uvicorn>=0.32.0",
     "starlette>=0.41.0",
 ]

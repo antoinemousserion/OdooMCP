@@ -53,7 +53,7 @@ def _collect_overrides(
 ) -> list[dict]:
     definitions, inherits = scan_model_matches(paths, model_name)
     related_files = {item["file"] for item in definitions + inherits}
-    base_files = {d["file"] for d in definitions}
+    base_files = {d["file"] for d in definitions if d["definition_kind"] == "canonical"}
     search_paths = _model_file_paths(paths, model_name, related_files)
 
     method_pattern = rf"^\s*def\s+{re.escape(method_name)}\s*\("

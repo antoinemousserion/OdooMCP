@@ -7,15 +7,18 @@ import os
 from mcp.server.fastmcp import FastMCP
 
 from odoo_mcp.config import get_odoo_paths
-from odoo_mcp.security import PathSecurityError
 from odoo_mcp.timing import log_tool_duration, setup_logging
 from odoo_mcp.tools import methods as methods_tools
 from odoo_mcp.tools import odoo as odoo_tools
 from odoo_mcp.tools import search as search_tools
+from odoo_mcp.tools.model_utils import load_module_depends
 
 setup_logging()
 _paths = get_odoo_paths()
 _version = _paths.version
+
+# Pré-charge le graphe de dépendances (~11 s au premier appel sinon).
+load_module_depends(_paths)
 
 mcp = FastMCP(
     name=f"Odoo {_version}",
@@ -25,7 +28,7 @@ mcp = FastMCP(
         "1. search_code with scope=<module> (e.g. 'sale') — never scope='all' unless unavoidable.\n"
         "2. read_file on paths from search results.\n\n"
         "STRUCTURED HELPERS (prefer over parsing grep yourself):\n"
-        "- find_model(model_name) — definitions + _inherit extensions.\n"
+        "- find_model(model_name, scope=<module>) — definitions + _inherit extensions; scope limits scan.\n"
         "- find_field(field_name, model_name=...) — field type, compute, related, store.\n"
         "- get_module_info(module_name) — manifest depends + folder structure.\n\n"
         "SLOW / SPECIALIZED (5–10 s, use only when you need ALL overrides + super() analysis):\n"
@@ -50,18 +53,33 @@ def search_code(
     scope: str = "all",
     glob_pattern: str | None = None,
     glob: str | None = None,
-    file_type: str | None = "py",
+    file_type: str | None = None,
     context_lines: int = 0,
     max_results: int = 30,
     case_insensitive: bool = False,
+    include_tests: bool = False,
 ) -> str:
     """Primary exploration tool — ripgrep. ALWAYS set scope to a module name (e.g. 'sale') when possible.
+
+    Searches ALL file types by default (py, xml, js, scss, csv…); narrow with file_type ('py', 'xml', 'js',
+    comma-separated: 'py,xml') or glob. Excluded by default: tests/ and test_* modules (include_tests=True to
+    search them), i18n/ translations, static/lib/ vendored JS. A glob mentioning 'test' or 'i18n' lifts the
+    matching exclusion. The result header lists the active filters.
+
+    Quote rules (pattern is passed to ripgrep as regex by default):
+        Python single quotes in source: query="def action_confirm" or query='def action_confirm'
+        XML double quotes: query='name=\"action_confirm\"' (escape inner doubles with backslash)
+        XML single quotes: query="name='action_confirm'" (no escape needed inside doubles)
+        Literal dots/special chars: use fixed_string via pattern with -F semantics is not exposed;
+        escape regex metacharacters or match literally (e.g. sale\\.order).
 
     Examples:
         query='def action_confirm', scope='sale', glob='**/models/*.py'
         query='amount_total', scope='sale', glob='**/models/*.py'
-        query='name=\"action_confirm\"', scope='sale', glob='**/views/**/*.xml', file_type=None
-        query='<field name=\"model\">sale.order</field>', scope='sale', file_type=None
+        query='name=\"action_confirm\"', scope='sale', glob='**/views/**/*.xml'
+        query='<field name=\"model\">sale.order</field>', scope='sale', file_type='xml'
+        query='patch\\(', scope='sale', file_type='js'
+        query='def test_.*confirm', scope='sale', include_tests=True
     """
     return search_tools.search_code(
         _paths,
@@ -74,6 +92,7 @@ def search_code(
         context=context_lines,
         max_results=max_results,
         case_insensitive=case_insensitive,
+        include_tests=include_tests,
     )
 
 
@@ -85,10 +104,7 @@ def read_file(
     limit: int = 150,
 ) -> str:
     """Read source with line numbers. Use after search_code. Keep limit ≤150 unless necessary."""
-    try:
-        return search_tools.read_file(_paths, path, offset=offset, limit=limit)
-    except PathSecurityError as exc:
-        return f"Error: {exc}"
+    return search_tools.read_file(_paths, path, offset=offset, limit=limit)
 
 
 # --- Odoo helpers (structured, scoped) ---
@@ -99,10 +115,17 @@ def read_file(
 def find_model(
     model_name: str | None = None,
     model: str | None = None,
+    scope: str = "all",
     max_results: int = 20,
 ) -> str:
-    """Where a model is defined (_name) and extended (_inherit). Faster than grepping manually."""
-    return odoo_tools.find_model(_paths, model_name=model_name, model=model, max_results=max_results)
+    """Where a model is defined (_name) and extended (_inherit). Set scope to the home module (e.g. 'sale') for a fast scan.
+
+    main_file = original definition. definitions[] includes definition_kind: 'canonical' (original definition)
+    vs 'redeclaration' (_name + _inherit of the same model, i.e. an extension such as microsoft_calendar).
+    """
+    return odoo_tools.find_model(
+        _paths, model_name=model_name, model=model, scope=scope, max_results=max_results
+    )
 
 
 @mcp.tool()
@@ -112,7 +135,10 @@ def find_field(
     model_name: str | None = None,
     module_hint: str | None = None,
 ) -> str:
-    """Field definition: type, related, compute, store, tracking. model_name is required for useful results."""
+    """Field definition: type, related, compute, store, tracking.
+
+    model_name is REQUIRED for useful results — without it the scan is slow (~10 s) and returns 100+ noisy hits.
+    """
     return odoo_tools.find_field(
         _paths,
         field_name,

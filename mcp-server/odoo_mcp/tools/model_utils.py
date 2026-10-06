@@ -237,16 +237,15 @@ def load_module_depends(paths: OdooPaths) -> dict[str, list[str]]:
 
 def module_load_rank(module: str, depends_map: dict[str, list[str]]) -> int:
     """Rang approximatif de chargement (plus haut = chargé plus tard)."""
-    visited: set[str] = set()
+    memo: dict[str, int] = {}
 
     def depth(mod: str) -> int:
-        if mod in visited:
-            return 0
-        visited.add(mod)
+        if mod in memo:
+            return memo[mod]
+        memo[mod] = 0  # garde contre les cycles de dépendances
         deps = depends_map.get(mod, [])
-        if not deps:
-            return 0
-        return 1 + max((depth(d) for d in deps), default=0)
+        memo[mod] = 1 + max(depth(d) for d in deps) if deps else 0
+        return memo[mod]
 
     return depth(module)
 

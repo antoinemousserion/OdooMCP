@@ -1,8 +1,16 @@
 # Odoo MCP
 
-A **read-only** [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that gives AI coding assistants (Cursor, Claude, etc.) access to local Odoo source code.
+A **read-only** [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that lets AI coding assistants (Cursor, Claude, etc.) **explore the Odoo source code** (community + enterprise) **without cloning it into your project**.
 
-Built for **Odoo.sh development**, where your project only contains custom modules — not the full Odoo community or enterprise codebase. This tool clones Odoo locally and exposes it through MCP tools optimized for searching large codebases.
+## What this is / what this is not
+
+| This MCP **is** | This MCP is **not** |
+|-----------------|---------------------|
+| A local index of the **Odoo codebase** (Python, XML, JS, …) | A connector to a **running Odoo instance** (XML-RPC / JSON-RPC / HTTP API) |
+| Tools to **search, read, and navigate** Odoo framework & addons | A way to **create records, call ORM methods, or query a database** |
+| Meant for **developing custom modules** when you only have your project on disk (typical on **Odoo.sh**) | An Odoo bot / chat assistant for end users |
+
+**Typical use:** on Odoo.sh (or any custom-module-only repo), the full Odoo tree is not in your workspace. Point Cursor at this MCP for the matching version (`odoo-v17`, `odoo-v18`, …) so the agent can look up how standard models, methods, and views are implemented — without polluting your git repo with `odoo/` or `enterprise/`.
 
 ## Features
 
@@ -10,7 +18,7 @@ Built for **Odoo.sh development**, where your project only contains custom modul
 - **Automatic Git clone/update** on container startup (community + enterprise)
 - **Read-only access** — no file writes, path traversal protection
 - **Fast search** via ripgrep, with Odoo-specific helpers (models, fields, modules)
-- **Persistent local storage** — cloned code is cached on your machine
+- **Persistent local storage** — cloned code is cached on your machine (separate from your project)
 
 ## Supported versions
 
@@ -97,7 +105,7 @@ Add the MCP server in **Cursor Settings → MCP** (see `cursor-mcp.example.json`
 }
 ```
 
-Enable only the version matching your current project.
+Enable **only the version matching your current project** (same major as your Odoo.sh branch). The agent will use tools like `search_code` / `find_model` against that codebase — not against your live database.
 
 ## Configuration
 
@@ -125,7 +133,7 @@ Create a token at: https://github.com/settings/tokens
 
 ## MCP tools
 
-All tools are **read-only**.
+All tools are **read-only** and operate on the **cloned Odoo source tree** (files on disk). There is no tool to connect to an Odoo URL, database, or API.
 
 | Tool | Description |
 |------|-------------|

@@ -10,7 +10,7 @@ from pathlib import Path
 from odoo_mcp.config import OdooPaths
 from odoo_mcp.security import PathSecurityError, resolve_search_path
 from odoo_mcp.tools import rg as rg_tools
-from odoo_mcp.tools.model_utils import parse_field_attributes, read_lines
+from odoo_mcp.tools.model_utils import load_module_depends, module_load_rank, parse_field_attributes, read_lines
 from odoo_mcp.tools.paths_util import enterprise_warning, normalize_result_path, resolve_scope
 from odoo_mcp.tools.search import MAX_OUTPUT_CHARS, _truncate
 from odoo_mcp.tools.xml_utils import file_declares_model
@@ -81,6 +81,52 @@ def _parse_inherit_values(raw: str) -> list[str]:
 _model_scan_cache: dict[tuple[str, str, str], tuple[list[dict], list[dict]]] = {}
 
 
+def _is_test_path(relative_path: str) -> bool:
+    parts = relative_path.split("/")
+    return "tests" in parts or any(part.startswith("test_") for part in parts[:-1])
+
+
+def _class_inherits_by_name_line(file_path: Path) -> dict[int, list[str]] | None:
+    """{ligne du `_name` de classe: valeurs `_inherit` de la même classe} ; None si le fichier ne parse pas."""
+    try:
+        tree = ast.parse(file_path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, SyntaxError, ValueError):
+        return None
+    result: dict[int, list[str]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        name_line: int | None = None
+        inherit: list[str] = []
+        for stmt in node.body:
+            if not (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name)):
+                continue
+            if stmt.targets[0].id == "_name":
+                name_line = stmt.lineno
+            elif stmt.targets[0].id == "_inherit":
+                try:
+                    value = ast.literal_eval(stmt.value)
+                except (ValueError, TypeError, SyntaxError):
+                    continue
+                if isinstance(value, str):
+                    inherit = [value]
+                elif isinstance(value, (list, tuple)):
+                    inherit = [v for v in value if isinstance(v, str)]
+        if name_line is not None:
+            result[name_line] = inherit
+    return result
+
+
+def _definition_kind(class_inherits: dict[int, list[str]] | None, line: int, model_name: str) -> str | None:
+    """canonical = définition d'origine ; redeclaration = `_name` + `_inherit` du même modèle (extension,
+    ex. microsoft_calendar sur calendar.event) ; None = `_name` hors corps de classe (pas une définition)."""
+    if class_inherits is None:
+        return "canonical"
+    if line not in class_inherits:
+        return None
+    return "redeclaration" if model_name in class_inherits[line] else "canonical"
+
+
 def _scan_model_matches(paths: OdooPaths, model_name: str, scope: str = "all") -> tuple[list[dict], list[dict]]:
     cache_key = (paths.version, model_name, scope)
     cached = _model_scan_cache.get(cache_key)
@@ -89,84 +135,71 @@ def _scan_model_matches(paths: OdooPaths, model_name: str, scope: str = "all") -
 
     definitions: list[dict] = []
     inherits: list[dict] = []
-    seen_def: set[tuple[str, int]] = set()
-    seen_inh: set[tuple[str, int]] = set()
 
     try:
         search_paths = resolve_search_path(paths, scope)
     except PathSecurityError:
         return definitions, inherits
 
-    fixed_patterns = [
-        f"_name = '{model_name}'",
-        f'_name = "{model_name}"',
-        f"_inherit = '{model_name}'",
-        f'_inherit = "{model_name}"',
-    ]
+    # Ancrés en début de ligne : `model_name = 'res.partner'` ne doit pas passer pour un `_name`.
+    quoted = rf"""['"]{re.escape(model_name)}['"]"""
+    name_re = rf"^\s*_name\s*=\s*{quoted}"
+    inherit_re = rf"^\s*_inherit\s*=\s*(?:{quoted}|[\[(][^\])]*{quoted})"
 
     matches, _ = rg_tools.run_rg(
         paths,
-        fixed_patterns[0],
+        name_re,
         search_paths,
         scope=scope,
         glob="**/*.py",
         file_type="py",
         max_results=400,
-        fixed_string=True,
-        patterns=fixed_patterns,
+        patterns=[name_re, inherit_re],
     )
+
+    seen: set[tuple[str, int]] = set()
+    class_inherits_cache: dict[str, dict[int, list[str]] | None] = {}
     for m in matches:
-        content = m.content
-        if any(p.startswith("_name") and p in content for p in fixed_patterns[:2]):
-            match_type = "_name"
-            bucket, seen = definitions, seen_def
-        else:
-            match_type = "_inherit"
-            bucket, seen = inherits, seen_inh
         key = (m.relative_path, m.line)
         if key in seen:
             continue
         seen.add(key)
-        bucket.append(
-            {
-                "file": m.relative_path,
-                "workspace_hint": m.workspace_hint,
-                "line": m.line,
-                "type": match_type,
-                "module": _module_from_path(paths, Path(m.file)),
-                "content": content.strip(),
-            }
-        )
+        entry = {
+            "file": m.relative_path,
+            "workspace_hint": m.workspace_hint,
+            "line": m.line,
+            "type": "_inherit",
+            "module": _module_from_path(paths, Path(m.file)),
+            "content": m.content.strip(),
+        }
+        if not re.match(name_re, m.content):
+            inherits.append(entry)
+            continue
+        if m.file not in class_inherits_cache:
+            class_inherits_cache[m.file] = _class_inherits_by_name_line(Path(m.file))
+        kind = _definition_kind(class_inherits_cache[m.file], m.line, model_name)
+        if kind is None:
+            continue
+        definitions.append({**entry, "type": "_name", "definition_kind": kind})
 
-    list_patterns = [
-        rf"_inherit\s*=\s*\[[^\]]*'{re.escape(model_name)}'",
-        rf'_inherit\s*=\s*\[[^\]]*"{re.escape(model_name)}"',
-    ]
-    for list_pattern in list_patterns:
-        matches, _ = rg_tools.run_rg(
-            paths,
-            list_pattern,
-            search_paths,
-            scope=scope,
-            glob="**/*.py",
-            file_type="py",
-            max_results=200,
+    # Ordre déterministe : définition d'origine d'abord, hors tests, puis ordre de chargement des modules.
+    depends_map = load_module_depends(paths)
+    rank_cache: dict[str, int] = {}
+
+    def load_rank(module: str) -> int:
+        if module not in rank_cache:
+            rank_cache[module] = module_load_rank(module, depends_map)
+        return rank_cache[module]
+
+    definitions.sort(
+        key=lambda d: (
+            d["definition_kind"] != "canonical",
+            _is_test_path(d["file"]),
+            load_rank(d["module"]),
+            d["file"],
         )
-        for m in matches:
-            key = (m.relative_path, m.line)
-            if key in seen_inh:
-                continue
-            seen_inh.add(key)
-            inherits.append(
-                {
-                    "file": m.relative_path,
-                    "workspace_hint": m.workspace_hint,
-                    "line": m.line,
-                    "type": "_inherit",
-                    "module": _module_from_path(paths, Path(m.file)),
-                    "content": m.content.strip(),
-                }
-            )
+    )
+    inherits.sort(key=lambda d: (_is_test_path(d["file"]), load_rank(d["module"]), d["file"], d["line"]))
 
     result = (definitions, inherits)
     _model_scan_cache[cache_key] = result
@@ -178,18 +211,20 @@ def find_model(
     model_name: str | None = None,
     *,
     model: str | None = None,
+    scope: str = "all",
     max_results: int = 30,
 ) -> str:
     effective_name = (model_name or model or "").strip()
     if not effective_name:
         return "Error: provide 'model_name' or 'model'."
 
-    definitions, inherits = _scan_model_matches(paths, effective_name)
+    definitions, inherits = _scan_model_matches(paths, effective_name, scope=scope)
 
     if not definitions and not inherits:
-        warning = enterprise_warning(paths, "all")
+        warning = enterprise_warning(paths, scope)
         payload: dict = {
             "model": effective_name,
+            "scope": scope,
             "definitions": [],
             "inherits": [],
             "main_file": None,
@@ -199,19 +234,32 @@ def find_model(
             payload["warning"] = warning
         return _truncate(json.dumps(payload, indent=2, ensure_ascii=False))
 
-    main_file = definitions[0]["file"] if definitions else inherits[0]["file"]
+    # Triés par _scan_model_matches : la définition d'origine (canonical) vient en premier.
+    main_def = definitions[0] if definitions else inherits[0]
+    main_file = main_def["file"]
     payload = {
         "model": effective_name,
+        "scope": scope,
         "definitions": definitions[:max_results],
+        "definitions_note": (
+            "definition_kind: 'canonical' = original definition (_name without inheriting itself); "
+            "'redeclaration' = _name + _inherit of the same model (an extension, e.g. microsoft_calendar "
+            "on calendar.event). Sorted canonical first, then by module load order."
+        ),
         "inherits": inherits[:max_results],
         "definitions_total": len(definitions),
         "definitions_truncated": len(definitions) > max_results,
         "inherits_total": len(inherits),
         "inherits_truncated": len(inherits) > max_results,
         "main_file": main_file,
-        "main_file_workspace_hint": definitions[0]["workspace_hint"] if definitions else inherits[0]["workspace_hint"],
+        "main_file_workspace_hint": main_def["workspace_hint"],
     }
-    warning = enterprise_warning(paths, "all")
+    if main_def.get("definition_kind") != "canonical":
+        payload["main_file_note"] = (
+            f"No original definition of {effective_name!r} in scope {scope!r}: main_file is an extension. "
+            "Use scope='all' to locate the original definition."
+        )
+    warning = enterprise_warning(paths, scope)
     if warning:
         payload["warning"] = warning
     return _truncate(json.dumps(payload, indent=2, ensure_ascii=False))
@@ -328,6 +376,11 @@ def find_field(
         "results_total": len(results),
         "results_truncated": len(results) > 50,
     }
+    if not model_name:
+        payload["performance_warning"] = (
+            "SLOW (~10 s) and noisy (100+ false positives): model_name was not provided. "
+            "Always pass model_name (e.g. 'sale.order') — scan drops to <1 s and results become precise."
+        )
     if warning:
         payload["warning"] = warning
     if not results:
