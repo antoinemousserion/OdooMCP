@@ -1,7 +1,8 @@
 # =============================================================================
 # Odoo MCP — Docker Compose
 # =============================================================================
-# Démarrer une version :  docker compose --profile v19 up -d --build
+# Démarrer une version :  docker compose --profile v19 up -d --build --force-recreate
+#                         (--force-recreate : sinon les conteneurs peuvent garder l'ancienne image)
 # Arrêter une version  :  docker compose --profile v19 down
 # Logs                 :  docker compose logs -f odoo-mcp-v19
 # Autostart Windows    :  .\scripts\install-autostart.ps1

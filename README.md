@@ -73,8 +73,10 @@ The script shows an interactive checklist (Odoo 15–19, all selected by default
 **Docker Compose directly:**
 
 ```bash
-docker compose --profile v19 up -d --build
+docker compose --profile v19 up -d --build --force-recreate
 ```
+
+The MCP server code is baked into the image (only the Odoo source is a volume): after changing `mcp-server/`, keep `--build --force-recreate`, otherwise the running containers may keep the old image. Then reconnect the MCP server in your client (e.g. `/mcp` in Claude Code) so it reloads the tool list.
 
 On first run, the container clones Odoo community (and enterprise if configured). This can take several minutes.
 
@@ -138,14 +140,11 @@ All tools are **read-only** and operate on the **cloned Odoo source tree** (file
 | Tool | Description |
 |------|-------------|
 | `search_code` | Regex search via ripgrep. Scope: module name (e.g. `sale`), `framework` (`odoo/orm`, `odoo/fields`, `odoo/tools`…), `community`, `enterprise`, or `all` (addons + framework). `path=` targets one folder or file (e.g. `odoo/orm/fields_relational.py`, `addons/web/static/lib/Chart`). Tests, i18n and `static/lib` are excluded by default (`include_tests=True`, `include_vendor=True`, or a `path`/`glob` that targets them) |
-| `glob_files` | Find files by glob pattern (e.g. `**/views/*.xml`) |
-| `read_file` | Read a file with line numbers |
-| `list_directory` | List directory contents |
-| `list_addons` | List all Odoo modules |
+| `read_file` | Read a file with line numbers (`offset` / `limit`) |
 | `find_model` | Find where a model is defined or inherited (`_name` / `_inherit`) |
-| `find_field` | Find field definitions (`fields.Xxx('name')`) |
+| `find_field` | Find field definitions: type, compute, related, store (pass `model_name`) |
 | `get_module_info` | Return `__manifest__.py` and module structure |
-| `get_codebase_status` | Git clone status (branch, file count) |
+| `find_method_overrides` | All Python overrides of a method + `super()` analysis and load order (slow, 5–10 s) |
 
 ## Common commands
 
@@ -160,7 +159,7 @@ All tools are **read-only** and operate on the **cloned Odoo source tree** (file
 .\scripts\start-odoo-mcp.ps1 -Stop -Version 18
 
 # Or with Docker Compose
-docker compose --profile v19 up -d --build
+docker compose --profile v19 up -d --build --force-recreate
 docker compose logs -f odoo-mcp-v19
 docker compose --profile v19 down
 ```
