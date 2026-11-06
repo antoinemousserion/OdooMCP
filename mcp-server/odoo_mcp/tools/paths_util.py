@@ -8,12 +8,21 @@ from pathlib import Path
 from odoo_mcp.config import OdooPaths
 
 
+# Scopes désignant le framework (community/odoo hors odoo/addons).
+FRAMEWORK_SCOPES = frozenset({"framework", "odoo", "core"})
+# Préfixe de scope utilisé quand search_code cible un chemin explicite.
+PATH_SCOPE_PREFIX = "path:"
+
+
 def enterprise_available(paths: OdooPaths) -> bool:
     return paths.enterprise is not None and paths.enterprise.is_dir()
 
 
 def enterprise_warning(paths: OdooPaths, scope: str) -> str | None:
-    if scope in ("enterprise", "community"):
+    scope_norm = (scope or "").strip().lower()
+    if scope_norm in ("enterprise", "community") or scope_norm in FRAMEWORK_SCOPES:
+        return None
+    if scope_norm.startswith(PATH_SCOPE_PREFIX):
         return None
     if enterprise_available(paths):
         return None

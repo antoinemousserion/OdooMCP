@@ -27,6 +27,10 @@ mcp = FastMCP(
         "DEFAULT WORKFLOW (fast):\n"
         "1. search_code with scope=<module> (e.g. 'sale') — never scope='all' unless unavoidable.\n"
         "2. read_file on paths from search results.\n\n"
+        "BEYOND ADDONS:\n"
+        "- ORM/framework internals (fields, models, domains, api, tools): search_code(scope='framework').\n"
+        "- Inside one file, a sub-folder or a vendored lib (static/lib): search_code(path='odoo/orm/fields_relational.py' "
+        "or 'addons/web/static/lib/Chart', context_lines=N) — better than paging read_file.\n\n"
         "STRUCTURED HELPERS (prefer over parsing grep yourself):\n"
         "- find_model(model_name, scope=<module>) — definitions + _inherit extensions; scope limits scan.\n"
         "- find_field(field_name, model_name=...) — field type, compute, related, store.\n"
@@ -51,6 +55,7 @@ def search_code(
     pattern: str | None = None,
     query: str | None = None,
     scope: str = "all",
+    path: str | None = None,
     glob_pattern: str | None = None,
     glob: str | None = None,
     file_type: str | None = None,
@@ -58,13 +63,23 @@ def search_code(
     max_results: int = 30,
     case_insensitive: bool = False,
     include_tests: bool = False,
+    include_vendor: bool = False,
 ) -> str:
     """Primary exploration tool — ripgrep. ALWAYS set scope to a module name (e.g. 'sale') when possible.
 
+    Where to search:
+        scope='<module>' (e.g. 'sale', 'web') — one addon, fastest.
+        scope='framework' (aliases 'odoo', 'core') — Odoo framework: odoo/orm, odoo/fields, odoo/models,
+            odoo/api, odoo/tools, odoo/http… (NOT included in module/community/enterprise scopes).
+        scope='community' / 'enterprise' — all addons of one edition.
+        scope='all' — all addons + framework (slow, avoid).
+        path='<dir or file>' — search one precise folder or file; overrides scope. Accepts the same formats as
+            read_file (addons/web/static/lib/Chart, odoo/orm/fields_relational.py, community/…, odoo_vXX/…).
+
     Searches ALL file types by default (py, xml, js, scss, csv…); narrow with file_type ('py', 'xml', 'js',
-    comma-separated: 'py,xml') or glob. Excluded by default: tests/ and test_* modules (include_tests=True to
-    search them), i18n/ translations, static/lib/ vendored JS. A glob mentioning 'test' or 'i18n' lifts the
-    matching exclusion. The result header lists the active filters.
+    comma-separated: 'py,xml') or glob. Excluded by default: tests/ and test_* modules (include_tests=True),
+    i18n/ translations, static/lib/ vendored JS libs such as Chart.js (include_vendor=True). A glob or path
+    mentioning 'test', 'i18n' or 'static/lib' lifts the matching exclusion. The result header lists the active filters.
 
     Quote rules (pattern is passed to ripgrep as regex by default):
         Python single quotes in source: query="def action_confirm" or query='def action_confirm'
@@ -80,12 +95,17 @@ def search_code(
         query='<field name=\"model\">sale.order</field>', scope='sale', file_type='xml'
         query='patch\\(', scope='sale', file_type='js'
         query='def test_.*confirm', scope='sale', include_tests=True
+        query='active_test', scope='framework', file_type='py'
+        query='active_test', path='odoo/orm/fields_relational.py', context_lines=5
+        query='afterDraw|ticks', path='addons/web/static/lib/Chart'
     """
     return search_tools.search_code(
         _paths,
         pattern=pattern,
         query=query,
         scope=scope,
+        path=path,
+        include_vendor=include_vendor,
         glob_pattern=glob_pattern,
         glob=glob,
         file_type=file_type,
@@ -103,7 +123,11 @@ def read_file(
     offset: int = 1,
     limit: int = 150,
 ) -> str:
-    """Read source with line numbers. Use after search_code. Keep limit ≤150 unless necessary."""
+    """Read source with line numbers. Use after search_code. Keep limit ≤150 unless necessary.
+
+    To locate something inside a large file, don't page through it: use
+    search_code(query=..., path='<this file>', context_lines=N), then read_file with the matching offset.
+    """
     return search_tools.read_file(_paths, path, offset=offset, limit=limit)
 
 

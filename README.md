@@ -137,7 +137,7 @@ All tools are **read-only** and operate on the **cloned Odoo source tree** (file
 
 | Tool | Description |
 |------|-------------|
-| `search_code` | Regex search via ripgrep. Scope: `all`, `community`, `enterprise`, or module name (e.g. `sale`) |
+| `search_code` | Regex search via ripgrep. Scope: module name (e.g. `sale`), `framework` (`odoo/orm`, `odoo/fields`, `odoo/tools`…), `community`, `enterprise`, or `all` (addons + framework). `path=` targets one folder or file (e.g. `odoo/orm/fields_relational.py`, `addons/web/static/lib/Chart`). Tests, i18n and `static/lib` are excluded by default (`include_tests=True`, `include_vendor=True`, or a `path`/`glob` that targets them) |
 | `glob_files` | Find files by glob pattern (e.g. `**/views/*.xml`) |
 | `read_file` | Read a file with line numbers |
 | `list_directory` | List directory contents |

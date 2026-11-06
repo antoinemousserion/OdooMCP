@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from odoo_mcp.config import OdooPaths
-from odoo_mcp.tools.paths_util import normalize_input_path
+from odoo_mcp.tools.paths_util import FRAMEWORK_SCOPES, normalize_input_path
 
 
 class PathSecurityError(ValueError):
@@ -86,6 +86,8 @@ def resolve_search_path(paths: OdooPaths, scope: str | None) -> list[Path]:
             return []
         ent = paths.enterprise.resolve()
         return [p for p in addon_dirs if _is_under(p, ent)] or [paths.enterprise]
+    if scope in FRAMEWORK_SCOPES:
+        return paths.framework_roots
 
     # Scope = nom de module addon
     for addon_root in paths.addon_roots:
@@ -98,5 +100,6 @@ def resolve_search_path(paths: OdooPaths, scope: str | None) -> list[Path]:
                 return [ent_module]
 
     raise PathSecurityError(
-        f"Scope inconnu : {scope!r}. Utilisez 'all', 'community', 'enterprise' ou un nom de module."
+        f"Scope inconnu : {scope!r}. Utilisez 'all', 'community', 'enterprise', "
+        f"'framework' (odoo/orm, odoo/fields…) ou un nom de module."
     )

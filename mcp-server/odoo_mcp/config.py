@@ -22,6 +22,18 @@ class OdooPaths:
         return roots
 
     @property
+    def framework_roots(self) -> list[Path]:
+        """Code du framework (odoo/orm, odoo/fields.py, odoo/tools…) — community/odoo sans odoo/addons."""
+        odoo_dir = self.community / "odoo"
+        if not odoo_dir.is_dir():
+            return []
+        return sorted(
+            entry
+            for entry in odoo_dir.iterdir()
+            if entry.name not in ("addons", "__pycache__") and not entry.name.startswith(".")
+        )
+
+    @property
     def addon_roots(self) -> list[Path]:
         """Chemins typiques des addons Odoo (community + enterprise)."""
         candidates: list[Path] = []
