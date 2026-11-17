@@ -11,6 +11,9 @@
     },
     "odoo-v16": {
       "url": "http://localhost:8016/sse"
+    },
+    "odoo-live": {
+      "url": "http://localhost:8900/sse"
     }
   }
 }

@@ -1,0 +1,12 @@
+{
+  "client-x-staging": {
+    "url": "https://client-x-staging.odoo.com",
+    "db": "client-x-staging-1234567",
+    "login": "readonly@client-x.com",
+    "api_key": "PASTE_API_KEY_HERE"
+  },
+  "local-19": {
+    "url": "http://host.docker.internal:8069",
+    "api_key": "PASTE_API_KEY_HERE"
+  }
+}

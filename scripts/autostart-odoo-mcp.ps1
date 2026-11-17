@@ -7,7 +7,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
-$AvailableVersions = @("15", "16", "17", "18", "19")
+$AvailableVersions = @("15", "16", "17", "18", "19", "live")
 
 function Get-DotEnvValue {
     param([string]$Name, [string]$Default)
@@ -78,7 +78,7 @@ try {
 
     $composeArgs = @("compose")
     foreach ($ver in $versions) {
-        $composeArgs += "--profile", "v$ver"
+        $composeArgs += "--profile", $(if ($ver -eq "live") { "live" } else { "v$ver" })
     }
     $composeArgs += @("up", "-d")
 

@@ -72,3 +72,25 @@ services:
       MCP_PORT: "8019"
     ports:
       - "8019:8019"
+
+  # Exploration en lecture seule de la DONNÉE d'instances Odoo (17/18/19).
+  # Démarrer : docker compose --profile live up -d --build --force-recreate
+  # Les profils (URL + clé API) sont dans instances.json, relu à chaud : pas de redémarrage.
+  # Pas d'env_file (le conteneur n'a pas besoin de GITHUB_TOKEN) ni de volume de code.
+  # On monte le dossier et non le fichier : un éditeur qui remplace le fichier à
+  # l'enregistrement casserait un montage de fichier seul.
+  odoo-mcp-live:
+    build:
+      context: ./mcp-server
+      dockerfile: Dockerfile
+    container_name: odoo-mcp-live
+    profiles: ["live"]
+    restart: always
+    entrypoint: ["python", "-m", "odoo_mcp.live_server"]
+    environment:
+      MCP_PORT: "8900"
+      ODOO_INSTANCES_FILE: /config/instances.json
+    ports:
+      - "127.0.0.1:8900:8900"
+    volumes:
+      - "${ODOO_MCP_CONFIG_DIR:-${USERPROFILE}/.odoo-mcp}:/config:ro"

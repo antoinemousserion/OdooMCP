@@ -6,7 +6,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
-$AvailableVersions = @("15", "16", "17", "18", "19")
+# "live" = MCP d'exploration de donnees d'une instance (service odoo-mcp-live, port 8900).
+$AvailableVersions = @("15", "16", "17", "18", "19", "live")
 
 function Get-DotEnvValue {
     param([string]$Name, [string]$Default)
@@ -37,7 +38,33 @@ function Ensure-EnvAndVolume {
 
 function Get-ServiceName {
     param([string]$Ver)
+    if ($Ver -eq "live") { return "odoo-mcp-live" }
     return "odoo-mcp-v$Ver"
+}
+
+function Get-ProfileName {
+    param([string]$Ver)
+    if ($Ver -eq "live") { return "live" }
+    return "v$Ver"
+}
+
+function Get-VersionLabel {
+    param([string]$Ver)
+    if ($Ver -eq "live") { return "Odoo live (donnees d'une instance)" }
+    return "Odoo $Ver"
+}
+
+function Ensure-LiveConfig {
+    $dir = Get-DotEnvValue "ODOO_MCP_CONFIG_DIR" (Join-Path $env:USERPROFILE ".odoo-mcp")
+    if (-not (Test-Path $dir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+    $file = Join-Path $dir "instances.json"
+    if (-not (Test-Path $file)) {
+        Set-Content -Path $file -Value "{}" -Encoding ascii
+        Write-Host "Fichier de profils cree : $file (modele : instances.example.json)" -ForegroundColor Yellow
+    }
+    return $file
 }
 
 function Test-VersionHasData {
@@ -82,7 +109,7 @@ function Select-VersionsInteractive {
 
             for ($i = 0; $i -lt $items.Count; $i++) {
                 $check = if ($items[$i].Selected) { "[*]" } else { "[ ]" }
-                $label = "  $check Odoo $($items[$i].Version)"
+                $label = "  $check $(Get-VersionLabel $items[$i].Version)"
                 if ($i -eq $cursor) {
                     Write-Host $label -ForegroundColor Black -BackgroundColor Cyan
                 }
@@ -166,9 +193,12 @@ function Start-SelectedVersions {
     $composeArgs = @("compose")
     foreach ($ver in $SelectedVersions) {
         $composeArgs += "--profile"
-        $composeArgs += "v$ver"
+        $composeArgs += (Get-ProfileName $ver)
     }
     $composeArgs += @("up", "-d", "--build", "--force-recreate")
+
+    $liveFile = $null
+    if ($SelectedVersions -contains "live") { $liveFile = Ensure-LiveConfig }
 
     & docker @composeArgs
     if ($LASTEXITCODE -ne 0) { throw "Echec du demarrage Docker Compose." }
@@ -176,7 +206,12 @@ function Start-SelectedVersions {
     Write-Host ""
     Write-Host "Conteneurs demarres. URLs MCP pour Cursor :" -ForegroundColor Green
     foreach ($ver in $SelectedVersions) {
-        Write-Host "  Odoo $ver -> http://localhost:80$ver/sse"
+        if ($ver -eq "live") {
+            Write-Host "  Odoo live -> http://localhost:8900/sse  (profils : $liveFile)"
+        }
+        else {
+            Write-Host "  Odoo $ver -> http://localhost:80$ver/sse"
+        }
     }
     Write-Host ""
     Write-Host "Premier lancement : le clone Git peut prendre plusieurs minutes."
@@ -192,7 +227,7 @@ function Show-Logs {
 
 function Stop-Version {
     param([string]$Ver)
-    docker compose --profile "v$Ver" down
+    docker compose --profile (Get-ProfileName $Ver) down
     Write-Host "Conteneur $(Get-ServiceName $Ver) arrete."
 }
 
